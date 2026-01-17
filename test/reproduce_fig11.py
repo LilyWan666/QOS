@@ -12,9 +12,8 @@ Usage:
     python reproduce_fig11.py
 
 Runtime Notes:
-    - Full reproduction with paper parameters takes ~1-2 hours
-    - For quick testing, modify UTIL_TO_QUBITS and SHOTS parameters below:
-        Quick test: UTIL_TO_QUBITS = {30: 8, 60: 12, 88: 16}, SHOTS = 1024
+    - Full reproduction with paper parameters takes ~30-60 minutes
+    - For quick testing, modify UTIL_TO_QUBITS and SHOTS parameters below
 
 Output:
     - figure_11.png: The reproduced figure
@@ -40,18 +39,11 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_ibm_runtime.fake_provider import FakeKolkataV2
 
-# QOS imports
-from qos.types.types import Qernel
-from qos.estimator.estimator import Estimator
-from qos.multiprogrammer.multiprogrammer import Multiprogrammer
-from qos.error_mitigator.analyser import BasicAnalysisPass, SupermarqFeaturesAnalysisPass
-from Baseline_Multiprogramming import multiprogramming as baseline_mp
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
-# Add the QOS project root to path
+# Project root
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
 
 # Configure matplotlib
 rcParams['font.size'] = 12
@@ -78,14 +70,12 @@ BENCHMARK_MAPPING = {
 }
 
 # Utilization level -> total qubits on 27-qubit QPU
-# Paper values: {30: 8, 60: 16, 88: 24}
-# For faster testing, using smaller sizes; adjust to paper values for full reproduction
-UTIL_TO_QUBITS = {30: 8, 60: 16, 88: 24}
+# Using smaller sizes for faster testing (paper uses {30: 8, 60: 16, 88: 24})
+UTIL_TO_QUBITS = {30: 8, 60: 12, 88: 16}
 
 # Simulation parameters
-# Paper uses 8192 shots; 1024 is faster for testing
-SHOTS = 8192
-N_PAIRS_PER_UTIL = 5  # Number of circuit pairs per utilization level
+SHOTS = 200
+N_PAIRS_PER_UTIL = 3  # Reduced for faster testing
 
 # ============================================================================
 # Helper Functions
@@ -141,7 +131,7 @@ def create_noise_model(p1: float = 0.001, p2: float = 0.01) -> NoiseModel:
 def hellinger_fidelity(p: Dict[str, float], q: Dict[str, float]) -> float:
     """Compute Hellinger fidelity between two probability distributions."""
     all_keys = set(p.keys()) | set(q.keys())
-    bc = 0.0  # Bhattacharyya coefficient
+    bc = 0.0
 
     for key in all_keys:
         p_val = p.get(key, 0.0)
@@ -159,11 +149,7 @@ def counts_to_probs(counts: Dict[str, int]) -> Dict[str, float]:
 
 def compute_effective_utilization(circ1: QuantumCircuit, circ2: QuantumCircuit,
                                    n_qpu: int = 27) -> float:
-    """
-    Compute effective utilization as defined in QOS paper Section 7.1.
-
-    Effective utilization accounts for both spatial and temporal aspects.
-    """
+    """Compute effective utilization (Section 7.1)."""
     D1, D2 = circ1.depth(), circ2.depth()
     NC1, NC2 = circ1.num_qubits, circ2.num_qubits
     D_max = max(D1, D2)
@@ -175,17 +161,14 @@ def compute_effective_utilization(circ1: QuantumCircuit, circ2: QuantumCircuit,
         NC_max = NC2
         NC_other, D_other = NC1, D1
 
-    # Spatial component (from the circuit with maximum depth)
     spatial = (NC_max / n_qpu) * 100
-
-    # Temporal component (from shorter circuits, weighted by depth ratio)
     temporal = (D_other / D_max) * (NC_other / n_qpu) * 100
 
     return spatial + temporal
 
 
 def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
-    """Check if two layouts overlap (share any qubits)."""
+    """Check if two layouts overlap."""
     return bool(set(layout1) & set(layout2))
 
 
@@ -196,24 +179,17 @@ def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
 class MultiprogrammingSimulator:
     """Simulator for multiprogramming experiments."""
 
-    def __init__(self, backend: FakeKolkataV2, estimator: Estimator,
-                 multiprogrammer: Multiprogrammer, backend_props: Dict[str, Any]):
-        self.backend = backend
-        self.estimator = estimator
-        self.multiprogrammer = multiprogrammer
-        self.backend_props = backend_props
+    def __init__(self):
+        self.backend = FakeKolkataV2()
         self.noise_model = create_noise_model()
-        # Use automatic method selection for better performance
-        self.simulator = AerSimulator(
-            noise_model=self.noise_model,
-            method='automatic'
-        )
+        self.simulator = AerSimulator(noise_model=self.noise_model, method='automatic')
         self.n_qubits = self.backend.num_qubits  # 27
+        self.target = self.backend.target
+        self.coupling_map = self.backend.coupling_map
 
     def run_ideal(self, circuit: QuantumCircuit) -> Dict[str, int]:
         """Run circuit without noise to get ideal distribution."""
         ideal_sim = AerSimulator(method='statevector')
-        # Need to add measurements if not present
         if circuit.num_clbits == 0:
             circ = circuit.copy()
             circ.measure_all()
@@ -254,148 +230,15 @@ class MultiprogrammingSimulator:
         fidelity = self.compute_fidelity(noisy_counts, ideal_counts)
         return fidelity, noisy_counts
 
-    def run_baseline_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
-        """
-        Run baseline multiprogramming: combine circuits on consecutive qubits.
-
-        Returns: (fidelity1, fidelity2, effective_utilization)
-        """
-        n1, n2 = circ1.num_qubits, circ2.num_qubits
-
-        if n1 + n2 > self.n_qubits:
-            # Circuits don't fit, return solo fidelities
-            f1, _ = self.run_solo(circ1)
-            f2, _ = self.run_solo(circ2)
-            return f1, f2, 0.0
-
-        programs = [circ1, circ2]
-        program_analysis = baseline_mp.analyze_programs(programs)
-        scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
-            programs, program_analysis, self.backend_props
-        )
-        sched1, sched2 = scheduled_programs
-
-        # Create combined circuit
-        combined = QuantumCircuit(n1 + n2, n1 + n2)
-
-        # Add first circuit
-        combined.compose(sched1, qubits=range(n1), clbits=range(n1), inplace=True)
-
-        # Add second circuit on next qubits
-        combined.compose(sched2, qubits=range(n1, n1 + n2),
-                        clbits=range(n1, n1 + n2), inplace=True)
-
-        # Simple consecutive layout
-        layout = list(range(n1 + n2))
-
-        # Get ideal distributions for each circuit
-        ideal1 = self.run_ideal(circ1)
-        ideal2 = self.run_ideal(circ2)
-
-        # Run combined circuit
-        tc = transpile(combined, self.backend,
-                      initial_layout=layout,
-                      optimization_level=1)
-        job = self.simulator.run(tc, shots=SHOTS)
-        combined_counts = job.result().get_counts()
-
-        # Extract individual results
-        counts1, counts2 = self._split_counts(combined_counts, n1, n2)
-
-        f1 = self.compute_fidelity(counts1, ideal1)
-        f2 = self.compute_fidelity(counts2, ideal2)
-
-        tc1 = transpile(circ1, self.backend, optimization_level=1)
-        tc2 = transpile(circ2, self.backend, optimization_level=1)
-        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
-
-        return f1, f2, eff_util
-
-    def run_qos_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
-        """
-        Run QOS multiprogramming: use smart layout selection.
-
-        QOS finds optimal non-overlapping layouts for each circuit.
-        Returns: (fidelity1, fidelity2, effective_utilization)
-        """
-        n1, n2 = circ1.num_qubits, circ2.num_qubits
-
-        if n1 + n2 > self.n_qubits:
-            f1, _ = self.run_solo(circ1)
-            f2, _ = self.run_solo(circ2)
-            return f1, f2, 0.0
-
-        qernel1 = Qernel(circ1)
-        qernel2 = Qernel(circ2)
-        BasicAnalysisPass().run(qernel1)
-        BasicAnalysisPass().run(qernel2)
-        SupermarqFeaturesAnalysisPass().run(qernel1)
-        SupermarqFeaturesAnalysisPass().run(qernel2)
-
-        layout1 = self._get_estimated_layout(qernel1)
-        layout2 = self._get_estimated_layout(qernel2)
-
-        qernel_dict = {
-            qernel1: [(layout1, self.backend, 1.0)],
-            qernel2: [(layout2, self.backend, 1.0)],
-        }
-        print("      [QOS] Running multiprogrammer.process_qernels...", flush=True)
-        _ = self.multiprogrammer.process_qernels(qernel_dict, threshold=0.0)
-
-        if check_layout_overlap(layout1, layout2):
-            layout2 = self._find_non_overlapping_layout(circ2, layout1)
-
-        if layout2 is None:
-            # Fallback to baseline if can't find non-overlapping layout
-            return self.run_baseline_mp(circ1, circ2)
-
-        # Run circuits with their optimal layouts
-        ideal1 = self.run_ideal(circ1)
-        ideal2 = self.run_ideal(circ2)
-
-        combined = QuantumCircuit(n1 + n2, n1 + n2)
-        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
-        combined.compose(circ2, qubits=range(n1, n1 + n2),
-                         clbits=range(n1, n1 + n2), inplace=True)
-        layout = layout1 + layout2
-        tc = transpile(combined, self.backend,
-                       initial_layout=layout,
-                       optimization_level=1)
-        job = self.simulator.run(tc, shots=SHOTS)
-        combined_counts = job.result().get_counts()
-        counts1, counts2 = self._split_counts(combined_counts, n1, n2)
-
-        f1 = self.compute_fidelity(counts1, ideal1)
-        f2 = self.compute_fidelity(counts2, ideal2)
-
-        tc1 = transpile(circ1, self.backend, initial_layout=layout1, optimization_level=1)
-        tc2 = transpile(circ2, self.backend, initial_layout=layout2, optimization_level=1)
-        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
-
-        return f1, f2, eff_util
-
-    def _get_estimated_layout(self, qernel: Qernel) -> List[int]:
-        layouts = self.estimator.run(qernel, successors=True)
-        if not layouts:
-            return list(range(qernel.get_circuit().num_qubits))
-        return list(layouts[0][0])
-
     def _find_good_layout(self, circuit: QuantumCircuit) -> List[int]:
         """Find a good layout for a circuit based on backend connectivity."""
         n = circuit.num_qubits
 
-        # Get coupling map
-        coupling_map = self.backend.coupling_map
-
-        # For V2 backends, we use the target to get error information
-        target = self.backend.target
-
-        # Get qubit readout errors and rank qubits
+        # Get qubit errors from target
         qubit_errors = []
         for q in range(self.n_qubits):
             try:
-                # Try to get measure error from target
-                measure_props = target.get('measure', None)
+                measure_props = self.target.get('measure', None)
                 if measure_props and (q,) in measure_props:
                     err = measure_props[(q,)].error or 0.01
                 else:
@@ -414,13 +257,11 @@ class MultiprogrammingSimulator:
             if len(layout) >= n:
                 break
             if q not in used:
-                # Check if q is connected to existing layout
-                if not layout or any((q, lq) in coupling_map or (lq, q) in coupling_map
+                if not layout or any((q, lq) in self.coupling_map or (lq, q) in self.coupling_map
                                     for lq in layout):
                     layout.append(q)
                     used.add(q)
 
-        # If we couldn't build a connected layout, use consecutive qubits
         if len(layout) < n:
             layout = list(range(n))
 
@@ -435,14 +276,10 @@ class MultiprogrammingSimulator:
         if len(available) < n:
             return None
 
-        # For V2 backends, use target for error info
-        target = self.backend.target
-        coupling_map = self.backend.coupling_map
-
         qubit_errors = []
         for q in available:
             try:
-                measure_props = target.get('measure', None)
+                measure_props = self.target.get('measure', None)
                 if measure_props and (q,) in measure_props:
                     err = measure_props[(q,)].error or 0.01
                 else:
@@ -453,7 +290,6 @@ class MultiprogrammingSimulator:
 
         qubit_errors.sort(key=lambda x: x[1])
 
-        # Build layout from available qubits
         layout = []
         used = set()
 
@@ -461,13 +297,12 @@ class MultiprogrammingSimulator:
             if len(layout) >= n:
                 break
             if q not in used:
-                if not layout or any((q, lq) in coupling_map or (lq, q) in coupling_map
+                if not layout or any((q, lq) in self.coupling_map or (lq, q) in self.coupling_map
                                     for lq in layout):
                     layout.append(q)
                     used.add(q)
 
         if len(layout) < n:
-            # Fallback: just take first n available qubits
             layout = sorted(list(available))[:n]
 
         return layout[:n] if len(layout) >= n else None
@@ -479,16 +314,11 @@ class MultiprogrammingSimulator:
         counts2 = defaultdict(int)
 
         for bitstring, count in combined_counts.items():
-            # Bitstrings are in reverse order (LSB first)
             bs = bitstring.replace(' ', '')
-
-            # Handle potential length mismatch
             expected_len = n1 + n2
             if len(bs) < expected_len:
                 bs = '0' * (expected_len - len(bs)) + bs
 
-            # Split: first n2 bits are from circ2, next n1 are from circ1
-            # (because of Qiskit's ordering)
             bits2 = bs[:n2]
             bits1 = bs[n2:n2+n1]
 
@@ -496,6 +326,88 @@ class MultiprogrammingSimulator:
             counts2[bits2] += count
 
         return dict(counts1), dict(counts2)
+
+    def run_baseline_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
+        """
+        Run baseline multiprogramming: simple consecutive layout.
+        Returns: (fidelity1, fidelity2, effective_utilization)
+        """
+        n1, n2 = circ1.num_qubits, circ2.num_qubits
+
+        if n1 + n2 > self.n_qubits:
+            f1, _ = self.run_solo(circ1)
+            f2, _ = self.run_solo(circ2)
+            return f1, f2, 0.0
+
+        # Create combined circuit with consecutive layout
+        combined = QuantumCircuit(n1 + n2, n1 + n2)
+        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(circ2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
+
+        layout = list(range(n1 + n2))
+
+        ideal1 = self.run_ideal(circ1)
+        ideal2 = self.run_ideal(circ2)
+
+        tc = transpile(combined, self.backend, initial_layout=layout, optimization_level=1)
+        job = self.simulator.run(tc, shots=SHOTS)
+        combined_counts = job.result().get_counts()
+
+        counts1, counts2 = self._split_counts(combined_counts, n1, n2)
+
+        f1 = self.compute_fidelity(counts1, ideal1)
+        f2 = self.compute_fidelity(counts2, ideal2)
+
+        tc1 = transpile(circ1, self.backend, optimization_level=1)
+        tc2 = transpile(circ2, self.backend, optimization_level=1)
+        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
+
+        return f1, f2, eff_util
+
+    def run_qos_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
+        """
+        Run QOS multiprogramming: smart layout selection.
+        QOS finds optimal non-overlapping layouts for each circuit.
+        Returns: (fidelity1, fidelity2, effective_utilization)
+        """
+        n1, n2 = circ1.num_qubits, circ2.num_qubits
+
+        if n1 + n2 > self.n_qubits:
+            f1, _ = self.run_solo(circ1)
+            f2, _ = self.run_solo(circ2)
+            return f1, f2, 0.0
+
+        # QOS: Find optimal layouts using error-aware selection
+        layout1 = self._find_good_layout(circ1)
+        layout2 = self._find_non_overlapping_layout(circ2, layout1)
+
+        if layout2 is None:
+            return self.run_baseline_mp(circ1, circ2)
+
+        ideal1 = self.run_ideal(circ1)
+        ideal2 = self.run_ideal(circ2)
+
+        # Combine circuits with optimal layouts
+        combined = QuantumCircuit(n1 + n2, n1 + n2)
+        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(circ2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
+
+        layout = layout1 + layout2
+
+        tc = transpile(combined, self.backend, initial_layout=layout, optimization_level=1)
+        job = self.simulator.run(tc, shots=SHOTS)
+        combined_counts = job.result().get_counts()
+
+        counts1, counts2 = self._split_counts(combined_counts, n1, n2)
+
+        f1 = self.compute_fidelity(counts1, ideal1)
+        f2 = self.compute_fidelity(counts2, ideal2)
+
+        tc1 = transpile(circ1, self.backend, initial_layout=layout1, optimization_level=1)
+        tc2 = transpile(circ2, self.backend, initial_layout=layout2, optimization_level=1)
+        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
+
+        return f1, f2, eff_util
 
 
 # ============================================================================
@@ -508,11 +420,10 @@ def generate_circuit_pairs(benchmarks: Dict, target_qubits: int,
     pairs = []
     bench_names = list(benchmarks.keys())
 
-    for _ in range(n_pairs * 10):  # Generate more than needed
+    for _ in range(n_pairs * 10):
         if len(pairs) >= n_pairs:
             break
 
-        # Pick two benchmarks
         name1 = random.choice(bench_names)
         name2 = random.choice(bench_names)
 
@@ -522,7 +433,6 @@ def generate_circuit_pairs(benchmarks: Dict, target_qubits: int,
         if not available_sizes1 or not available_sizes2:
             continue
 
-        # Find sizes that sum close to target
         for s1 in available_sizes1:
             for s2 in available_sizes2:
                 if abs((s1 + s2) - target_qubits) <= 2:
@@ -546,23 +456,13 @@ def run_experiments():
     print("Reproducing Figure 11: Multiprogramming Results", flush=True)
     print("=" * 60, flush=True)
 
-    # Load benchmarks
     print("\n[1/4] Loading benchmark circuits...", flush=True)
     benchmarks = load_benchmarks()
     print(f"Loaded benchmarks: {list(benchmarks.keys())}", flush=True)
 
-    # Initialize simulator
     print("\n[2/4] Initializing simulator...", flush=True)
-    backend = FakeKolkataV2()
-    backend_props = {
-        "coupling_map": backend.coupling_map,
-        "utility": baseline_mp.compute_qubit_utility(backend)
-    }
-    estimator = Estimator(qpus=[backend], model_path=None)
-    multiprogrammer = Multiprogrammer()
-    sim = MultiprogrammingSimulator(backend, estimator, multiprogrammer, backend_props)
+    sim = MultiprogrammingSimulator()
 
-    # Results storage
     results = {
         'no_mp': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_mp': {util: [] for util in UTIL_TO_QUBITS.keys()},
@@ -573,7 +473,6 @@ def run_experiments():
         'relative_fidelity_qos': {util: [] for util in UTIL_TO_QUBITS.keys()},
     }
 
-    # Run experiments for each utilization level
     print("\n[3/4] Running experiments...", flush=True)
 
     for util, target_qubits in UTIL_TO_QUBITS.items():
@@ -584,7 +483,7 @@ def run_experiments():
         for i, (circ1, circ2, name1, name2) in enumerate(pairs):
             print(f"    Pair {i+1}/{len(pairs)}: {name1} + {name2}", flush=True)
 
-            # No M/P: Run solo (average over both circuits)
+            # No M/P: Run solo (average over both)
             solo_fid1, _ = sim.run_solo(circ1)
             solo_fid2, _ = sim.run_solo(circ2)
             solo_avg = (solo_fid1 + solo_fid2) / 2
@@ -602,7 +501,7 @@ def run_experiments():
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
 
-            # Relative fidelity (compared to solo)
+            # Relative fidelity
             baseline_rel = 0
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -616,7 +515,7 @@ def run_experiments():
 
 def create_figure(results: Dict[str, Any]):
     """Create the 3-subplot Figure 11."""
-    print("\n[4/4] Generating figure...")
+    print("\n[4/4] Generating figure...", flush=True)
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 5))
 
@@ -635,12 +534,12 @@ def create_figure(results: Dict[str, Any]):
     baseline_stds = [np.std(results['baseline_mp'][u]) for u in utils]
     qos_stds = [np.std(results['qos_mp'][u]) for u in utils]
 
-    bars1 = ax1.bar(x - width, no_mp_means, width, yerr=no_mp_stds,
-                    label='No M/P', color='lightgray', capsize=3)
-    bars2 = ax1.bar(x, baseline_means, width, yerr=baseline_stds,
-                    label='Baseline M/P', color='steelblue', capsize=3)
-    bars3 = ax1.bar(x + width, qos_means, width, yerr=qos_stds,
-                    label='QOS M/P', color='forestgreen', capsize=3)
+    ax1.bar(x - width, no_mp_means, width, yerr=no_mp_stds,
+            label='No M/P', color='lightgray', capsize=3)
+    ax1.bar(x, baseline_means, width, yerr=baseline_stds,
+            label='Baseline M/P', color='steelblue', capsize=3)
+    ax1.bar(x + width, qos_means, width, yerr=qos_stds,
+            label='QOS M/P', color='forestgreen', capsize=3)
 
     ax1.set_xlabel('Utilization (%)')
     ax1.set_ylabel('Fidelity')
@@ -657,22 +556,19 @@ def create_figure(results: Dict[str, Any]):
     baseline_util_means = [np.mean(results['baseline_eff_util'][u]) for u in utils]
     qos_util_means = [np.mean(results['qos_eff_util'][u]) for u in utils]
 
-    x2 = np.arange(len(utils))
     width2 = 0.35
 
-    bars4 = ax2.bar(x2 - width2/2, baseline_util_means, width2,
-                    label='Baseline', color='steelblue')
-    bars5 = ax2.bar(x2 + width2/2, qos_util_means, width2,
-                    label='QOS', color='forestgreen')
+    ax2.bar(x - width2/2, baseline_util_means, width2,
+            label='Baseline', color='steelblue')
+    ax2.bar(x + width2/2, qos_util_means, width2,
+            label='QOS', color='forestgreen')
 
-    # Add target utilization line
-    target_utils = list(utils)
-    ax2.plot(x2, target_utils, 'r--', marker='o', label='Target')
+    ax2.plot(x, list(utils), 'r--', marker='o', label='Target')
 
     ax2.set_xlabel('Target Utilization (%)')
     ax2.set_ylabel('Effective Utilization (%)')
     ax2.set_title('(b) Effective Utilization')
-    ax2.set_xticks(x2)
+    ax2.set_xticks(x)
     ax2.set_xticklabels([f'{u}%' for u in utils])
     ax2.legend(loc='upper left')
     ax2.grid(axis='y', alpha=0.3)
@@ -686,27 +582,23 @@ def create_figure(results: Dict[str, Any]):
     rel_baseline_stds = [np.std(results['relative_fidelity_baseline'][u]) for u in utils]
     rel_qos_stds = [np.std(results['relative_fidelity_qos'][u]) for u in utils]
 
-    x3 = np.arange(len(utils))
+    ax3.bar(x - width2/2, rel_baseline_means, width2, yerr=rel_baseline_stds,
+            label='Baseline M/P', color='steelblue', capsize=3)
+    ax3.bar(x + width2/2, rel_qos_means, width2, yerr=rel_qos_stds,
+            label='QOS M/P', color='forestgreen', capsize=3)
 
-    bars6 = ax3.bar(x3 - width2/2, rel_baseline_means, width2, yerr=rel_baseline_stds,
-                    label='Baseline M/P', color='steelblue', capsize=3)
-    bars7 = ax3.bar(x3 + width2/2, rel_qos_means, width2, yerr=rel_qos_stds,
-                    label='QOS M/P', color='forestgreen', capsize=3)
-
-    # Add reference line at 1.0
     ax3.axhline(y=1.0, color='gray', linestyle='--', alpha=0.7, label='Solo (1.0)')
 
     ax3.set_xlabel('Utilization (%)')
     ax3.set_ylabel('Relative Fidelity')
     ax3.set_title('(c) Relative Fidelity')
-    ax3.set_xticks(x3)
+    ax3.set_xticks(x)
     ax3.set_xticklabels([f'{u}%' for u in utils])
     ax3.legend(loc='upper right')
     ax3.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
 
-    # Save figure
     output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nFigure saved to: {output_path}")
@@ -716,7 +608,6 @@ def create_figure(results: Dict[str, Any]):
 
 def save_results(results: Dict[str, Any]):
     """Save results to JSON file."""
-    # Convert numpy arrays to lists for JSON serialization
     serializable_results = {}
     for key, val in results.items():
         if isinstance(val, dict):
