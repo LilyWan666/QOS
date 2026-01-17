@@ -40,6 +40,12 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_ibm_runtime.fake_provider import FakeKolkataV2
 
+# QOS imports
+from qos.types.types import Qernel
+from qos.estimator.estimator import Estimator
+from qos.multiprogrammer.multiprogrammer import Multiprogrammer
+from qos.error_mitigator.analyser import BasicAnalysisPass, SupermarqFeaturesAnalysisPass
+from Baseline_Multiprogramming import multiprogramming as baseline_mp
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
@@ -190,8 +196,12 @@ def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
 class MultiprogrammingSimulator:
     """Simulator for multiprogramming experiments."""
 
-    def __init__(self):
-        self.backend = FakeKolkataV2()
+    def __init__(self, backend: FakeKolkataV2, estimator: Estimator,
+                 multiprogrammer: Multiprogrammer, backend_props: Dict[str, Any]):
+        self.backend = backend
+        self.estimator = estimator
+        self.multiprogrammer = multiprogrammer
+        self.backend_props = backend_props
         self.noise_model = create_noise_model()
         # Use automatic method selection for better performance
         self.simulator = AerSimulator(
@@ -258,14 +268,21 @@ class MultiprogrammingSimulator:
             f2, _ = self.run_solo(circ2)
             return f1, f2, 0.0
 
+        programs = [circ1, circ2]
+        program_analysis = baseline_mp.analyze_programs(programs)
+        scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
+            programs, program_analysis, self.backend_props
+        )
+        sched1, sched2 = scheduled_programs
+
         # Create combined circuit
         combined = QuantumCircuit(n1 + n2, n1 + n2)
 
         # Add first circuit
-        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(sched1, qubits=range(n1), clbits=range(n1), inplace=True)
 
         # Add second circuit on next qubits
-        combined.compose(circ2, qubits=range(n1, n1 + n2),
+        combined.compose(sched2, qubits=range(n1, n1 + n2),
                         clbits=range(n1, n1 + n2), inplace=True)
 
         # Simple consecutive layout
@@ -288,7 +305,9 @@ class MultiprogrammingSimulator:
         f1 = self.compute_fidelity(counts1, ideal1)
         f2 = self.compute_fidelity(counts2, ideal2)
 
-        eff_util = compute_effective_utilization(circ1, circ2, self.n_qubits)
+        tc1 = transpile(circ1, self.backend, optimization_level=1)
+        tc2 = transpile(circ2, self.backend, optimization_level=1)
+        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
 
         return f1, f2, eff_util
 
@@ -306,9 +325,25 @@ class MultiprogrammingSimulator:
             f2, _ = self.run_solo(circ2)
             return f1, f2, 0.0
 
-        # Find good layouts using mapomatic-like approach
-        layout1 = self._find_good_layout(circ1)
-        layout2 = self._find_non_overlapping_layout(circ2, layout1)
+        qernel1 = Qernel(circ1)
+        qernel2 = Qernel(circ2)
+        BasicAnalysisPass().run(qernel1)
+        BasicAnalysisPass().run(qernel2)
+        SupermarqFeaturesAnalysisPass().run(qernel1)
+        SupermarqFeaturesAnalysisPass().run(qernel2)
+
+        layout1 = self._get_estimated_layout(qernel1)
+        layout2 = self._get_estimated_layout(qernel2)
+
+        qernel_dict = {
+            qernel1: [(layout1, self.backend, 1.0)],
+            qernel2: [(layout2, self.backend, 1.0)],
+        }
+        print("      [QOS] Running multiprogrammer.process_qernels...", flush=True)
+        _ = self.multiprogrammer.process_qernels(qernel_dict, threshold=0.0)
+
+        if check_layout_overlap(layout1, layout2):
+            layout2 = self._find_non_overlapping_layout(circ2, layout1)
 
         if layout2 is None:
             # Fallback to baseline if can't find non-overlapping layout
@@ -318,15 +353,32 @@ class MultiprogrammingSimulator:
         ideal1 = self.run_ideal(circ1)
         ideal2 = self.run_ideal(circ2)
 
-        noisy1 = self.run_noisy(circ1, layout1)
-        noisy2 = self.run_noisy(circ2, layout2)
+        combined = QuantumCircuit(n1 + n2, n1 + n2)
+        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(circ2, qubits=range(n1, n1 + n2),
+                         clbits=range(n1, n1 + n2), inplace=True)
+        layout = layout1 + layout2
+        tc = transpile(combined, self.backend,
+                       initial_layout=layout,
+                       optimization_level=1)
+        job = self.simulator.run(tc, shots=SHOTS)
+        combined_counts = job.result().get_counts()
+        counts1, counts2 = self._split_counts(combined_counts, n1, n2)
 
-        f1 = self.compute_fidelity(noisy1, ideal1)
-        f2 = self.compute_fidelity(noisy2, ideal2)
+        f1 = self.compute_fidelity(counts1, ideal1)
+        f2 = self.compute_fidelity(counts2, ideal2)
 
-        eff_util = compute_effective_utilization(circ1, circ2, self.n_qubits)
+        tc1 = transpile(circ1, self.backend, initial_layout=layout1, optimization_level=1)
+        tc2 = transpile(circ2, self.backend, initial_layout=layout2, optimization_level=1)
+        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
 
         return f1, f2, eff_util
+
+    def _get_estimated_layout(self, qernel: Qernel) -> List[int]:
+        layouts = self.estimator.run(qernel, successors=True)
+        if not layouts:
+            return list(range(qernel.get_circuit().num_qubits))
+        return list(layouts[0][0])
 
     def _find_good_layout(self, circuit: QuantumCircuit) -> List[int]:
         """Find a good layout for a circuit based on backend connectivity."""
@@ -501,7 +553,14 @@ def run_experiments():
 
     # Initialize simulator
     print("\n[2/4] Initializing simulator...", flush=True)
-    sim = MultiprogrammingSimulator()
+    backend = FakeKolkataV2()
+    backend_props = {
+        "coupling_map": backend.coupling_map,
+        "utility": baseline_mp.compute_qubit_utility(backend)
+    }
+    estimator = Estimator(qpus=[backend], model_path=None)
+    multiprogrammer = Multiprogrammer()
+    sim = MultiprogrammingSimulator(backend, estimator, multiprogrammer, backend_props)
 
     # Results storage
     results = {
@@ -525,10 +584,11 @@ def run_experiments():
         for i, (circ1, circ2, name1, name2) in enumerate(pairs):
             print(f"    Pair {i+1}/{len(pairs)}: {name1} + {name2}", flush=True)
 
-            # No M/P: Run solo (use larger circuit)
-            larger_circ = circ1 if circ1.num_qubits >= circ2.num_qubits else circ2
-            solo_fid, _ = sim.run_solo(larger_circ)
-            results['no_mp'][util].append(solo_fid)
+            # No M/P: Run solo (average over both circuits)
+            solo_fid1, _ = sim.run_solo(circ1)
+            solo_fid2, _ = sim.run_solo(circ2)
+            solo_avg = (solo_fid1 + solo_fid2) / 2
+            results['no_mp'][util].append(solo_avg)
 
             # Baseline M/P
             bf1, bf2, b_eff = sim.run_baseline_mp(circ1, circ2)
@@ -543,8 +603,13 @@ def run_experiments():
             results['qos_eff_util'][util].append(q_eff)
 
             # Relative fidelity (compared to solo)
-            results['relative_fidelity_baseline'][util].append(baseline_avg_fid / solo_fid if solo_fid > 0 else 0)
-            results['relative_fidelity_qos'][util].append(qos_avg_fid / solo_fid if solo_fid > 0 else 0)
+            baseline_rel = 0
+            qos_rel = 0
+            if solo_fid1 > 0 and solo_fid2 > 0:
+                baseline_rel = ((bf1 / solo_fid1) + (bf2 / solo_fid2)) / 2
+                qos_rel = ((qf1 / solo_fid1) + (qf2 / solo_fid2)) / 2
+            results['relative_fidelity_baseline'][util].append(baseline_rel)
+            results['relative_fidelity_qos'][util].append(qos_rel)
 
     return results
 

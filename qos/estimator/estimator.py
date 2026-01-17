@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import logging
 from random import choice
 import pickle
@@ -75,11 +75,16 @@ class Estimator(Engine):
     _qpu_properties = {}
     
 
-    def __init__(self, qpus: list = None, model_path: str = "qos/estimator") -> None:
+    def __init__(self, qpus: list = None, model_path: Optional[str] = "qos/estimator") -> None:
         max_qpu_id = 0
 
         max_qpu_id = db.getLastQPUid()
-        self.model = joblib.load(model_path)  # scikit-learn model
+        self.model = None
+        if model_path:
+            try:
+                self.model = joblib.load(model_path)  # scikit-learn model
+            except Exception as exc:
+                print(f"[WARN] Estimator model load failed: {exc}")
 
         if qpus == None:
             for i in range(1, max_qpu_id + 1):

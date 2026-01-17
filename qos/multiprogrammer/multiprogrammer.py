@@ -23,8 +23,10 @@ class Multiprogrammer(Engine):
         self.done_queue = []
 
     def spatial_utilization(self, q1: Qernel, q2: Qernel, backend: QPU) -> float:
-        util1 = q1.num_qubits() / backend.num_qubits
-        util2 = q2.num_qubits() / backend.num_qubits
+        circ1 = q1.get_circuit()
+        circ2 = q2.get_circuit()
+        util1 = circ1.num_qubits / backend.num_qubits
+        util2 = circ2.num_qubits / backend.num_qubits
 
         return util1 + util2
 
@@ -52,17 +54,19 @@ class Multiprogrammer(Engine):
               Qernel relative to the maximum depth (D_max) among the Qernels.
         """
          # Find the Qernel with the maximum depth (D_max)
-        D_max = max((q1.depth(), q2.depth()))
+        circ1 = q1.get_circuit()
+        circ2 = q2.get_circuit()
+        D_max = max((circ1.depth(), circ2.depth()))
 
         # Find the Qernel with the maximum allocated qubits (C_max)
-        C_max = max((q1.num_qubits(), q2.depth()))
+        C_max = max((circ1.num_qubits, circ2.num_qubits))
 
         # Spatial utilization (from the Qernel with C_max)
         spatial_util = (C_max / backend.num_qubits) * 100
 
         # Temporal utilization (weighted sum of spatial usage)
         temporal_util = 0.0
-        qernels = [q1, q2]
+        qernels = [circ1, circ2]
         for q in qernels:
             D_k = q.depth()
             C_k = q.num_qubits
@@ -170,6 +174,7 @@ class Multiprogrammer(Engine):
                 - Calls `re_evaluation_policy()` if layouts overlap.
         """
         results = []
+        selected_qernel = None
 
         # Iterate over the dictionary to compute spatial utilization for each pair with the same backend
         for q1, q1_data in qernel_dict.items():
@@ -200,11 +205,11 @@ class Multiprogrammer(Engine):
             if matching_score > threshold:
                 # Check if the layouts have common elements
                 if not check_layout_overlap(layout1, layout2):
-                    qernel = self.restrict_policy()
+                    selected_qernel = self.restrict_policy()
                 else:
-                    qernel = self.re_evaluation_policy()
+                    selected_qernel = self.re_evaluation_policy()
 
-        return qernel
+        return selected_qernel
 
     def run(self, qernels: List[Qernel]) -> List[Qernel]:
 

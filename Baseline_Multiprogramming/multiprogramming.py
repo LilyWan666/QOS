@@ -42,46 +42,33 @@ def get_all_backend_info(backend: IBMBackend) -> Dict[str, Any]:
 
     return backend_info
 
-def compute_qubit_utility(backend_properties: Dict[str, Any]) -> Dict[int, float]:
+def compute_qubit_utility(backend: IBMBackend) -> Dict[int, float]:
     """
     Compute the utility of each physical qubit on a QPU.
 
     Args:
-        coupling_map (List[List[int]]): The coupling map of the QPU, where each entry is a pair of connected qubits.
-        backend_properties (BackendProperties): The backend properties containing error rates for the QPU.
+        backend (IBMBackend): The backend containing coupling map and error rates.
 
     Returns:
         Dict[int, float]: A dictionary mapping each qubit to its computed utility value.
     """
-    # Initialize utility dictionary
     utility = {}
-    coupling_map = backend_properties['coupling_map']
+    coupling_map = backend.coupling_map
+    props = backend.properties()
 
-    # Iterate over each qubit in the coupling map
-    for qubit in range(len(backend_properties.qubits)):
-        # Get the neighbors of the qubit from the coupling map
+    for qubit in range(backend.num_qubits):
         neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
                     [pair[0] for pair in coupling_map if pair[1] == qubit]
 
-        # Compute the number of links (degree of the qubit)
         num_links = len(neighbors)
-
-        # Compute the sum of error rates for the links
         error_sum = 0
         for neighbor in neighbors:
             try:
-                # Get the error rate for the link (CX gate error)
-                error_rate = backend_properties.gate_error('cx', [qubit, neighbor])
-                error_sum += error_rate
-            except:
-                # If no error rate is available, assume a default value
-                error_sum += 0.01  # Default error rate
+                error_sum += props.gate_error('cx', [qubit, neighbor])
+            except Exception:
+                error_sum += 0.01
 
-        # Compute the utility for the qubit
-        if error_sum > 0:
-            utility[qubit] = num_links / error_sum
-        else:
-            utility[qubit] = 0  # Avoid division by zero
+        utility[qubit] = num_links / error_sum if error_sum > 0 else 0
 
     return utility
 
@@ -161,7 +148,8 @@ def analyze_programs(programs: List[QuantumCircuit]) -> Dict[int, Dict[str, Any]
 
     return program_analysis
 
-def create_sub_graph(circuit: QuantumCircuit, utility: dict, cmr: float, alpha: float, beta: float) -> nx.Graph:
+def create_sub_graph(circuit: QuantumCircuit, coupling_map: List[List[int]],
+                     utility: Dict[int, float], cmr: float, alpha: float, beta: float) -> nx.Graph:
     """
     Locate a reliable cluster on the chip and create a subgraph.
 
@@ -177,15 +165,15 @@ def create_sub_graph(circuit: QuantumCircuit, utility: dict, cmr: float, alpha: 
     """
     # Initialize graph and rank
     graph = nx.Graph()
-    for qubit, neighbors in utility.items():
-        for neighbor in neighbors:
-            graph.add_edge(qubit, neighbor)
+    graph.add_edges_from([(edge[0], edge[1]) for edge in coupling_map])
 
     rank = 0
     root_node = None
 
     # Find the root node
-    while root_node is None:
+    attempts = 0
+    max_attempts = max(3, len(graph.nodes))
+    while root_node is None and attempts < max_attempts:
         for node in graph.nodes:
             neighbors = list(graph.neighbors(node))
             high_utility_neighbors = [n for n in neighbors if utility[n] > alpha]
@@ -197,6 +185,10 @@ def create_sub_graph(circuit: QuantumCircuit, utility: dict, cmr: float, alpha: 
 
         if root_node is None:
             rank += 1
+            attempts += 1
+
+    if root_node is None:
+        root_node = max(utility, key=utility.get)
 
     # Grow the subgraph
     sub_graph = nx.Graph()
@@ -252,7 +244,7 @@ def fair_and_reliable_partition(graph: nx.Graph, usage: dict, interaction: dict,
 def independent_qubit_allocation_and_scheduling(
     programs: List[QuantumCircuit],
     program_analysis: Dict[int, Dict[str, Any]],
-    backend_props: Dict[int, float]
+    backend_props: Dict[str, Any]
 ) -> List[QuantumCircuit]:
     """
     Perform independent qubit allocation and scheduling for a list of quantum programs.
@@ -271,6 +263,9 @@ def independent_qubit_allocation_and_scheduling(
     """
     scheduled_programs = []
 
+    utility = backend_props["utility"]
+    coupling_map = backend_props["coupling_map"]
+
     for program_index, program in enumerate(programs):
         # Extract analysis results for the current program
         analysis = program_analysis[program_index]
@@ -279,7 +274,7 @@ def independent_qubit_allocation_and_scheduling(
         cmr = analysis["CMR"]
 
         # Step 1: Create a subgraph for the program
-        graph = create_sub_graph(program, usage, cmr, alpha=0.6, beta=0.4)  # Alpha and beta are fixed here
+        graph = create_sub_graph(program, coupling_map, utility, cmr, alpha=0.6, beta=0.4)
 
         # Step 2: Perform fair and reliable partitioning
         qubit_allocation = fair_and_reliable_partition(graph, usage, interaction, program)
@@ -320,13 +315,16 @@ def shared_qubit_allocation_and_scheduling(
 
     # Step 1: Create a combined subgraph for all programs
     combined_graph = nx.Graph()
+    utility = backend_props["utility"]
+    coupling_map = backend_props["coupling_map"]
+
     for program_index, program in enumerate(programs):
         analysis = program_analysis[program_index]
         usage = analysis["Usage"]
         cmr = analysis["CMR"]
 
         # Create a subgraph for the current program
-        program_graph = create_sub_graph(program, usage, cmr, alpha=0.6, beta=0.4)
+        program_graph = create_sub_graph(program, coupling_map, utility, cmr, alpha=0.6, beta=0.4)
         combined_graph = nx.compose(combined_graph, program_graph)
 
     # Step 2: Perform shared qubit allocation
@@ -342,7 +340,6 @@ def shared_qubit_allocation_and_scheduling(
         shared_allocation.update(allocation)
 
     # Step 3: Apply SABRE mapping for variation-aware scheduling
-    coupling_map = backend_props['coupling_map']
     sabre_swap = SabreSwap(coupling_map)
     pass_manager = PassManager(sabre_swap)
 
