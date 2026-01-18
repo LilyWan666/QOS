@@ -4,7 +4,7 @@ from qiskit import QuantumCircuit
 
 from qiskit_ibm_runtime import IBMBackend
 from qiskit.transpiler.passes import SabreSwap
-from qiskit.transpiler import PassManager
+from qiskit.transpiler import PassManager, CouplingMap
 from qiskit.transpiler.passes import ALAPSchedule
 from typing import Dict, List, Any
 
@@ -341,12 +341,17 @@ def shared_qubit_allocation_and_scheduling(
 
     # Step 3: Apply SABRE mapping for variation-aware scheduling
     for program in programs:
+        if program.num_qubits <= 1:
+            scheduled_programs.append(program)
+            continue
+
         prog_coupling = [edge for edge in coupling_map
                          if edge[0] < program.num_qubits and edge[1] < program.num_qubits]
-        if not prog_coupling and program.num_qubits > 1:
+        if not prog_coupling:
             prog_coupling = [(i, i + 1) for i in range(program.num_qubits - 1)]
 
-        sabre_swap = SabreSwap(prog_coupling)
+        coupling = CouplingMap(prog_coupling)
+        sabre_swap = SabreSwap(coupling)
         pass_manager = PassManager(sabre_swap)
 
         # Apply SABRE mapping to each program

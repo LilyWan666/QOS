@@ -86,8 +86,8 @@ UTIL_TO_QUBITS = {30: 8, 60: 16}
 NO_MP_UTIL_TO_QUBITS = {30: 8, 60: 16}
 
 # Simulation parameters
-SHOTS = 100
-N_PAIRS_PER_UTIL = 3  # Reduced for faster testing
+SHOTS = 1000
+N_PAIRS_PER_UTIL = 6  # Increased for more stable averages
 
 # ============================================================================
 # Helper Functions
@@ -222,10 +222,11 @@ class MultiprogrammingSimulator:
         ideal_probs = counts_to_probs(ideal_counts)
         return hellinger_fidelity(noisy_probs, ideal_probs)
 
-    def run_solo(self, circuit: QuantumCircuit) -> Tuple[float, Dict[str, int]]:
+    def run_solo(self, circuit: QuantumCircuit,
+                 initial_layout: List[int] = None) -> Tuple[float, Dict[str, int]]:
         """Run a single circuit solo (no multiprogramming)."""
         ideal_counts = self.run_ideal(circuit)
-        noisy_counts = self.run_noisy(circuit)
+        noisy_counts = self.run_noisy(circuit, initial_layout=initial_layout)
         fidelity = self.compute_fidelity(noisy_counts, ideal_counts)
         return fidelity, noisy_counts
 
@@ -326,7 +327,7 @@ class MultiprogrammingSimulator:
 
         return dict(counts1), dict(counts2)
 
-    def run_baseline_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
+    def run_baseline_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float, List[int], List[int]]:
         """
         Run baseline multiprogramming: simple consecutive layout.
         Returns: (fidelity1, fidelity2, effective_utilization)
@@ -360,11 +361,13 @@ class MultiprogrammingSimulator:
             print(f"[WARN] Baseline scheduling failed: {exc}")
 
         n1, n2 = sched1.num_qubits, sched2.num_qubits
+        layout1 = list(range(n1))
+        layout2 = list(range(n1, n1 + n2))
 
         if n1 + n2 > self.n_qubits:
             f1, _ = self.run_solo(circ1)
             f2, _ = self.run_solo(circ2)
-            return f1, f2, 0.0
+            return f1, f2, 0.0, layout1, layout2
 
         # Create combined circuit with consecutive layout
         combined = QuantumCircuit(n1 + n2, n1 + n2)
@@ -387,9 +390,9 @@ class MultiprogrammingSimulator:
 
         eff_util = compute_effective_utilization(circ1, circ2, self.backend)
 
-        return f1, f2, eff_util
+        return f1, f2, eff_util, layout1, layout2
 
-    def run_qos_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float]:
+    def run_qos_mp(self, circ1: QuantumCircuit, circ2: QuantumCircuit) -> Tuple[float, float, float, List[int], List[int]]:
         """
         Run QOS multiprogramming: smart layout selection.
         QOS finds optimal non-overlapping layouts for each circuit.
@@ -400,7 +403,9 @@ class MultiprogrammingSimulator:
         if n1 + n2 > self.n_qubits:
             f1, _ = self.run_solo(circ1)
             f2, _ = self.run_solo(circ2)
-            return f1, f2, 0.0
+            layout1 = list(range(n1))
+            layout2 = list(range(n1, n1 + n2))
+            return f1, f2, 0.0, layout1, layout2
 
         # QOS: Find optimal layouts using error-aware selection
         layout1 = self._find_good_layout(circ1)
@@ -430,7 +435,7 @@ class MultiprogrammingSimulator:
 
         eff_util = compute_effective_utilization(circ1, circ2, self.backend)
 
-        return f1, f2, eff_util
+        return f1, f2, eff_util, layout1, layout2
 
 
 # ============================================================================
@@ -474,7 +479,7 @@ def generate_circuit_pairs(benchmarks: Dict, target_qubits: int,
 
 
 def generate_candidate_pairs(benchmarks: Dict, target_qubits: int,
-                             tolerance: int = 2) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+                             tolerance: int = 0) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
     """Generate all candidate pairs within a qubit-count tolerance."""
     pairs = []
     seen = set()
@@ -616,13 +621,13 @@ def run_experiments():
         for i, (circ1, circ2, name1, name2) in enumerate(baseline_pairs):
             print(f"    Baseline Pair {i+1}/{len(baseline_pairs)}: {name1} + {name2}", flush=True)
 
-            solo_fid1, _ = sim.run_solo(circ1)
-            solo_fid2, _ = sim.run_solo(circ2)
-
-            bf1, bf2, b_eff = sim.run_baseline_mp(circ1, circ2)
+            bf1, bf2, b_eff, bl1, bl2 = sim.run_baseline_mp(circ1, circ2)
             baseline_avg_fid = (bf1 + bf2) / 2
             results['baseline_mp'][util].append(baseline_avg_fid)
             results['baseline_eff_util'][util].append(b_eff)
+
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=bl1)
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=bl2)
 
             baseline_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -645,13 +650,13 @@ def run_experiments():
         for i, (circ1, circ2, name1, name2) in enumerate(qos_pairs):
             print(f"    QOS Pair {i+1}/{len(qos_pairs)}: {name1} + {name2}", flush=True)
 
-            solo_fid1, _ = sim.run_solo(circ1)
-            solo_fid2, _ = sim.run_solo(circ2)
-
-            qf1, qf2, q_eff = sim.run_qos_mp(circ1, circ2)
+            qf1, qf2, q_eff, ql1, ql2 = sim.run_qos_mp(circ1, circ2)
             qos_avg_fid = (qf1 + qf2) / 2
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
+
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=ql1)
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=ql2)
 
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -725,6 +730,7 @@ def create_figure(results: Dict[str, Any]):
     ax2.set_title('(b) Effective Utilization')
     ax2.set_xticks(x)
     ax2.set_xticklabels([f'{u}%' for u in utils])
+    ax2.set_ylim(0, 100)
     ax2.legend(loc='upper left')
     ax2.grid(axis='y', alpha=0.3)
 

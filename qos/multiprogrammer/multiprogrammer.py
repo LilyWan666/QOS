@@ -43,12 +43,11 @@ class Multiprogrammer(Engine):
                    spatial utilization and temporal utilization, expressed as a percentage.
 
         Notes:
-            - Spatial utilization is determined by the Qernel with the maximum 
-              allocated qubits (C_max) relative to the total number of qubits 
-              available on the backend.
-            - Temporal utilization is a weighted sum of the spatial usage of 
-              each Qernel, where the weight is proportional to the depth of the 
-              Qernel relative to the maximum depth (D_max) among the Qernels.
+            - Spatial utilization is determined by the Qernel with the maximum
+              depth (D_max) relative to the total number of qubits available on
+              the backend.
+            - Temporal utilization accounts for the shorter-depth Qernel,
+              weighted by the ratio of its depth to D_max.
         """
         # Find the Qernel with the maximum depth (D_max)
         circ1 = q1.get_circuit()
@@ -57,18 +56,18 @@ class Multiprogrammer(Engine):
         D2 = circ2.depth()
         D_max = max((D1, D2))
 
-        # Find the Qernel with the maximum allocated qubits (C_max)
-        C_max = max((circ1.num_qubits, circ2.num_qubits))
+        # Spatial utilization (from the circuit with maximum depth)
+        if D1 >= D2:
+            C_max = circ1.num_qubits
+            C_other, D_other = circ2.num_qubits, D2
+        else:
+            C_max = circ2.num_qubits
+            C_other, D_other = circ1.num_qubits, D1
 
-        # Spatial utilization (from the Qernel with C_max)
         spatial_util = (C_max / backend.num_qubits) * 100
 
         # Temporal utilization (from shorter circuits, weighted by depth ratio)
         if D_max > 0:
-            if D1 >= D2:
-                C_other, D_other = circ2.num_qubits, D2
-            else:
-                C_other, D_other = circ1.num_qubits, D1
             temporal_util = (D_other / D_max) * (C_other / backend.num_qubits) * 100
         else:
             temporal_util = 0.0
