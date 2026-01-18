@@ -44,6 +44,14 @@ warnings.filterwarnings('ignore')
 
 # Project root
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+# QOS imports
+from qos.types.types import Qernel
+from qos.multiprogrammer.multiprogrammer import Multiprogrammer
+from qos.error_mitigator.analyser import SupermarqFeaturesAnalysisPass
+from Baseline_Multiprogramming import multiprogramming as baseline_mp
 
 # Configure matplotlib
 rcParams['font.size'] = 12
@@ -71,10 +79,14 @@ BENCHMARK_MAPPING = {
 
 # Utilization level -> total qubits on 27-qubit QPU
 # Using smaller sizes for faster testing (paper uses {30: 8, 60: 16, 88: 24})
-UTIL_TO_QUBITS = {30: 8, 60: 12, 88: 16}
+# UTIL_TO_QUBITS = {30: 8, 60: 16, 88: 24}
+UTIL_TO_QUBITS = {30: 8, 60: 16}
+# No-M/P (Fig.11a) should match paper utilization mapping.
+# NO_MP_UTIL_TO_QUBITS = {30: 8, 60: 16, 88: 24}
+NO_MP_UTIL_TO_QUBITS = {30: 8, 60: 16}
 
 # Simulation parameters
-SHOTS = 200
+SHOTS = 100
 N_PAIRS_PER_UTIL = 3  # Reduced for faster testing
 
 # ============================================================================
@@ -148,23 +160,10 @@ def counts_to_probs(counts: Dict[str, int]) -> Dict[str, float]:
 
 
 def compute_effective_utilization(circ1: QuantumCircuit, circ2: QuantumCircuit,
-                                   n_qpu: int = 27) -> float:
-    """Compute effective utilization (Section 7.1)."""
-    D1, D2 = circ1.depth(), circ2.depth()
-    NC1, NC2 = circ1.num_qubits, circ2.num_qubits
-    D_max = max(D1, D2)
-
-    if D1 >= D2:
-        NC_max = NC1
-        NC_other, D_other = NC2, D2
-    else:
-        NC_max = NC2
-        NC_other, D_other = NC1, D1
-
-    spatial = (NC_max / n_qpu) * 100
-    temporal = (D_other / D_max) * (NC_other / n_qpu) * 100
-
-    return spatial + temporal
+                                   backend) -> float:
+    """Compute effective utilization via QOS Multiprogrammer."""
+    mp = Multiprogrammer()
+    return mp.effective_utilization(Qernel(circ1), Qernel(circ2), backend)
 
 
 def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
@@ -332,7 +331,35 @@ class MultiprogrammingSimulator:
         Run baseline multiprogramming: simple consecutive layout.
         Returns: (fidelity1, fidelity2, effective_utilization)
         """
-        n1, n2 = circ1.num_qubits, circ2.num_qubits
+        sched1, sched2 = circ1, circ2
+        try:
+            programs = [circ1, circ2]
+            program_analysis = baseline_mp.analyze_programs(programs)
+            try:
+                utility = baseline_mp.compute_qubit_utility(self.backend)
+            except Exception:
+                coupling_map = list(self.backend.coupling_map)
+                utility = {}
+                for qubit in range(self.n_qubits):
+                    neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
+                                [pair[0] for pair in coupling_map if pair[1] == qubit]
+                    num_links = len(neighbors)
+                    error_sum = max(num_links * 0.01, 0.01)
+                    utility[qubit] = num_links / error_sum if error_sum > 0 else 0
+
+            backend_props = {
+                "coupling_map": self.backend.coupling_map,
+                "utility": utility,
+            }
+            scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
+                programs, program_analysis, backend_props
+            )
+            if len(scheduled_programs) == 2:
+                sched1, sched2 = scheduled_programs
+        except Exception as exc:
+            print(f"[WARN] Baseline scheduling failed: {exc}")
+
+        n1, n2 = sched1.num_qubits, sched2.num_qubits
 
         if n1 + n2 > self.n_qubits:
             f1, _ = self.run_solo(circ1)
@@ -341,8 +368,8 @@ class MultiprogrammingSimulator:
 
         # Create combined circuit with consecutive layout
         combined = QuantumCircuit(n1 + n2, n1 + n2)
-        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
-        combined.compose(circ2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
+        combined.compose(sched1, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(sched2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
 
         layout = list(range(n1 + n2))
 
@@ -358,9 +385,7 @@ class MultiprogrammingSimulator:
         f1 = self.compute_fidelity(counts1, ideal1)
         f2 = self.compute_fidelity(counts2, ideal2)
 
-        tc1 = transpile(circ1, self.backend, optimization_level=1)
-        tc2 = transpile(circ2, self.backend, optimization_level=1)
-        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
+        eff_util = compute_effective_utilization(circ1, circ2, self.backend)
 
         return f1, f2, eff_util
 
@@ -403,9 +428,7 @@ class MultiprogrammingSimulator:
         f1 = self.compute_fidelity(counts1, ideal1)
         f2 = self.compute_fidelity(counts2, ideal2)
 
-        tc1 = transpile(circ1, self.backend, initial_layout=layout1, optimization_level=1)
-        tc2 = transpile(circ2, self.backend, initial_layout=layout2, optimization_level=1)
-        eff_util = compute_effective_utilization(tc1, tc2, self.n_qubits)
+        eff_util = compute_effective_utilization(circ1, circ2, self.backend)
 
         return f1, f2, eff_util
 
@@ -450,6 +473,100 @@ def generate_circuit_pairs(benchmarks: Dict, target_qubits: int,
     return pairs[:n_pairs]
 
 
+def generate_candidate_pairs(benchmarks: Dict, target_qubits: int,
+                             tolerance: int = 2) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    """Generate all candidate pairs within a qubit-count tolerance."""
+    pairs = []
+    seen = set()
+
+    for name1, sizes1 in benchmarks.items():
+        for name2, sizes2 in benchmarks.items():
+            for s1, circ1 in sizes1.items():
+                for s2, circ2 in sizes2.items():
+                    if abs((s1 + s2) - target_qubits) > tolerance:
+                        continue
+
+                    key = tuple(sorted(((name1, s1), (name2, s2))))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    p_name1, p_name2 = name1, name2
+                    p_s1, p_s2 = s1, s2
+                    p_c1, p_c2 = circ1, circ2
+                    if (p_name2, p_s2) < (p_name1, p_s1):
+                        p_name1, p_name2 = p_name2, p_name1
+                        p_s1, p_s2 = p_s2, p_s1
+                        p_c1, p_c2 = p_c2, p_c1
+
+                    pairs.append((
+                        p_c1,
+                        p_c2,
+                        f"{p_name1}-{p_s1}",
+                        f"{p_name2}-{p_s2}",
+                    ))
+
+    return pairs
+
+
+def select_baseline_pairs(benchmarks: Dict, target_qubits: int,
+                          n_pairs: int) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    """Baseline: random pairing within target utilization."""
+    candidates = generate_candidate_pairs(benchmarks, target_qubits)
+    random.shuffle(candidates)
+    return candidates[:n_pairs]
+
+
+def select_qos_pairs(benchmarks: Dict, target_qubits: int, n_pairs: int,
+                     backend) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    """QOS: choose highest matching-score pairs."""
+    candidates = generate_candidate_pairs(benchmarks, target_qubits)
+    if not candidates:
+        return []
+
+    mp = Multiprogrammer()
+    analyser = SupermarqFeaturesAnalysisPass()
+    qernel_cache = {}
+
+    def get_qernel(circ: QuantumCircuit, label: str) -> Qernel:
+        q = qernel_cache.get(label)
+        if q is None:
+            q = Qernel(circ)
+            analyser.run(q)
+            qernel_cache[label] = q
+        return q
+
+    scored = []
+    for circ1, circ2, name1, name2 in candidates:
+        try:
+            q1 = get_qernel(circ1, name1)
+            q2 = get_qernel(circ2, name2)
+            score = mp.get_matching_score(q1, q2, backend)
+            scored.append((score, (circ1, circ2, name1, name2)))
+        except Exception as exc:
+            print(f"[WARN] QOS scoring failed for {name1}+{name2}: {exc}")
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [pair for _, pair in scored[:n_pairs]]
+
+
+def generate_solo_circuits(benchmarks: Dict, target_qubits: int,
+                           n_samples: int = None) -> List[Tuple[QuantumCircuit, str]]:
+    """Generate solo circuits with exactly target_qubits."""
+    options = []
+    for name, sizes in benchmarks.items():
+        if target_qubits in sizes:
+            options.append((sizes[target_qubits], f"{name}-{target_qubits}"))
+
+    if not options:
+        raise ValueError(f"No solo circuits available for {target_qubits} qubits")
+
+    if n_samples is None:
+        return options
+
+    return [random.choice(options) for _ in range(n_samples)]
+
+
 def run_experiments():
     """Run all experiments for Figure 11."""
     print("=" * 60, flush=True)
@@ -475,40 +592,78 @@ def run_experiments():
 
     print("\n[3/4] Running experiments...", flush=True)
 
+    print("\n[3a/4] Running No M/P only...", flush=True)
     for util, target_qubits in UTIL_TO_QUBITS.items():
         print(f"\n  Utilization {util}% ({target_qubits} qubits):", flush=True)
 
-        pairs = generate_circuit_pairs(benchmarks, target_qubits, N_PAIRS_PER_UTIL)
+        no_mp_qubits = NO_MP_UTIL_TO_QUBITS.get(util, target_qubits)
+        solo_circuits = generate_solo_circuits(benchmarks, no_mp_qubits)
 
-        for i, (circ1, circ2, name1, name2) in enumerate(pairs):
-            print(f"    Pair {i+1}/{len(pairs)}: {name1} + {name2}", flush=True)
+        for i, (solo_circ, solo_name) in enumerate(solo_circuits):
+            print(f"    No M/P {i+1}/{len(solo_circuits)}: {solo_name}", flush=True)
+            solo_fid, _ = sim.run_solo(solo_circ)
+            results['no_mp'][util].append(solo_fid)
 
-            # No M/P: Run solo (average over both)
+        if results['no_mp'][util]:
+            print(f"    No M/P mean: {np.mean(results['no_mp'][util]):.4f}", flush=True)
+
+    print("\n[3b/4] Running Baseline M/P...", flush=True)
+    for util, target_qubits in UTIL_TO_QUBITS.items():
+        print(f"\n  Utilization {util}% ({target_qubits} qubits):", flush=True)
+
+        baseline_pairs = select_baseline_pairs(benchmarks, target_qubits, N_PAIRS_PER_UTIL)
+
+        for i, (circ1, circ2, name1, name2) in enumerate(baseline_pairs):
+            print(f"    Baseline Pair {i+1}/{len(baseline_pairs)}: {name1} + {name2}", flush=True)
+
             solo_fid1, _ = sim.run_solo(circ1)
             solo_fid2, _ = sim.run_solo(circ2)
-            solo_avg = (solo_fid1 + solo_fid2) / 2
-            results['no_mp'][util].append(solo_avg)
 
-            # Baseline M/P
             bf1, bf2, b_eff = sim.run_baseline_mp(circ1, circ2)
             baseline_avg_fid = (bf1 + bf2) / 2
             results['baseline_mp'][util].append(baseline_avg_fid)
             results['baseline_eff_util'][util].append(b_eff)
 
-            # QOS M/P
+            baseline_rel = 0
+            if solo_fid1 > 0 and solo_fid2 > 0:
+                baseline_rel = ((bf1 / solo_fid1) + (bf2 / solo_fid2)) / 2
+            results['relative_fidelity_baseline'][util].append(baseline_rel)
+
+            print(
+                "      Baseline metrics so far: "
+                f"fid={np.mean(results['baseline_mp'][util]):.4f}, "
+                f"rel={np.mean(results['relative_fidelity_baseline'][util]):.4f}",
+                flush=True,
+            )
+
+    print("\n[3c/4] Running QOS M/P...", flush=True)
+    for util, target_qubits in UTIL_TO_QUBITS.items():
+        print(f"\n  Utilization {util}% ({target_qubits} qubits):", flush=True)
+
+        qos_pairs = select_qos_pairs(benchmarks, target_qubits, N_PAIRS_PER_UTIL, sim.backend)
+
+        for i, (circ1, circ2, name1, name2) in enumerate(qos_pairs):
+            print(f"    QOS Pair {i+1}/{len(qos_pairs)}: {name1} + {name2}", flush=True)
+
+            solo_fid1, _ = sim.run_solo(circ1)
+            solo_fid2, _ = sim.run_solo(circ2)
+
             qf1, qf2, q_eff = sim.run_qos_mp(circ1, circ2)
             qos_avg_fid = (qf1 + qf2) / 2
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
 
-            # Relative fidelity
-            baseline_rel = 0
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
-                baseline_rel = ((bf1 / solo_fid1) + (bf2 / solo_fid2)) / 2
                 qos_rel = ((qf1 / solo_fid1) + (qf2 / solo_fid2)) / 2
-            results['relative_fidelity_baseline'][util].append(baseline_rel)
             results['relative_fidelity_qos'][util].append(qos_rel)
+
+            print(
+                "      QOS metrics so far: "
+                f"fid={np.mean(results['qos_mp'][util]):.4f}, "
+                f"rel={np.mean(results['relative_fidelity_qos'][util]):.4f}",
+                flush=True,
+            )
 
     return results
 

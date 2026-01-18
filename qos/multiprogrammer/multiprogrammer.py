@@ -1,12 +1,9 @@
 from qos.types.types import Engine
 from typing import Any, Dict, List, Tuple
-import qos.database as db
 from qos.types.types import Qernel
 import logging
-from qos.multiprogrammer.tools import check_layout_overlap, size_overflow, bundle_qernels
 from time import sleep
 from qos.types.types import QPU
-from qos.estimator.estimator import Estimator
 import numpy as np
 from mapomatic import layouts
 
@@ -53,10 +50,12 @@ class Multiprogrammer(Engine):
               each Qernel, where the weight is proportional to the depth of the 
               Qernel relative to the maximum depth (D_max) among the Qernels.
         """
-         # Find the Qernel with the maximum depth (D_max)
+        # Find the Qernel with the maximum depth (D_max)
         circ1 = q1.get_circuit()
         circ2 = q2.get_circuit()
-        D_max = max((circ1.depth(), circ2.depth()))
+        D1 = circ1.depth()
+        D2 = circ2.depth()
+        D_max = max((D1, D2))
 
         # Find the Qernel with the maximum allocated qubits (C_max)
         C_max = max((circ1.num_qubits, circ2.num_qubits))
@@ -64,14 +63,15 @@ class Multiprogrammer(Engine):
         # Spatial utilization (from the Qernel with C_max)
         spatial_util = (C_max / backend.num_qubits) * 100
 
-        # Temporal utilization (weighted sum of spatial usage)
-        temporal_util = 0.0
-        qernels = [circ1, circ2]
-        for q in qernels:
-            D_k = q.depth()
-            C_k = q.num_qubits
-            weight = D_k / D_max
-            temporal_util += weight * (C_k / backend.num_qubits) * 100
+        # Temporal utilization (from shorter circuits, weighted by depth ratio)
+        if D_max > 0:
+            if D1 >= D2:
+                C_other, D_other = circ2.num_qubits, D2
+            else:
+                C_other, D_other = circ1.num_qubits, D1
+            temporal_util = (D_other / D_max) * (C_other / backend.num_qubits) * 100
+        else:
+            temporal_util = 0.0
 
         # Total effective utilization
         u_eff = spatial_util + temporal_util
@@ -173,6 +173,8 @@ class Multiprogrammer(Engine):
                 - Calls `restrict_policy()` if layouts do not overlap.
                 - Calls `re_evaluation_policy()` if layouts overlap.
         """
+        from qos.multiprogrammer.tools import check_layout_overlap
+
         results = []
         selected_qernel = None
 
@@ -230,6 +232,8 @@ class Multiprogrammer(Engine):
     #   2. The new circuits left are G and H, move the window by two circuits, this is because the new circuits need to enter the window and the size of the window is fixed
     
     def restrict_policy(self, new_qernels: Qernel | List[Qernel] , error_limit: float, matching_cycles=1, max_bundle=2) -> None:
+        from qos.multiprogrammer.tools import check_layout_overlap, size_overflow, bundle_qernels
+
         # This is whole algorithm is very very unclean, but it works for now
         # This compares matching 0 of the incoming qernel with matching 0 of a qernel on the queue, the 1 to 0 then 0 to 1 and so on
         cycles = [(0,0), (1,0), (0,1), (1,1), (2,0), (0,2), (2,1), (1,2), (2,2), (3,0), (0,3), (3,1), (1,3), (3,2), (2,3), (3,3)]
@@ -286,6 +290,9 @@ class Multiprogrammer(Engine):
         return 0
 
     def re_evaluation_policy(self, qernel1: Qernel, qernel2, successors=False) -> Qernel:
+        from qos.multiprogrammer.tools import bundle_qernels
+        from qos.estimator.estimator import Estimator
+
         bundled_qernel = bundle_qernels(qernel1, qernel2, (0,0))
 
         estimator = Estimator()
@@ -295,6 +302,9 @@ class Multiprogrammer(Engine):
         return result
 
     def _base_policy(self, newQernel: Qernel, error_limit: float) -> None:
+        import qos.database as db
+        from qos.multiprogrammer.tools import check_layout_overlap
+
         # self.logger.log(10, "Running Base policy")
 
         logger = logging.getLogger(__name__)

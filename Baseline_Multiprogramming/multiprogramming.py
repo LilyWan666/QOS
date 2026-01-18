@@ -340,10 +340,15 @@ def shared_qubit_allocation_and_scheduling(
         shared_allocation.update(allocation)
 
     # Step 3: Apply SABRE mapping for variation-aware scheduling
-    sabre_swap = SabreSwap(coupling_map)
-    pass_manager = PassManager(sabre_swap)
-
     for program in programs:
+        prog_coupling = [edge for edge in coupling_map
+                         if edge[0] < program.num_qubits and edge[1] < program.num_qubits]
+        if not prog_coupling and program.num_qubits > 1:
+            prog_coupling = [(i, i + 1) for i in range(program.num_qubits - 1)]
+
+        sabre_swap = SabreSwap(prog_coupling)
+        pass_manager = PassManager(sabre_swap)
+
         # Apply SABRE mapping to each program
         scheduled_program = pass_manager.run(program)
         scheduled_programs.append(scheduled_program)
