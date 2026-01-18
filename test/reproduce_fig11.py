@@ -79,11 +79,11 @@ BENCHMARK_MAPPING = {
 
 # Utilization level -> total qubits on 27-qubit QPU
 # Using smaller sizes for faster testing (paper uses {30: 8, 60: 16, 88: 24})
-# UTIL_TO_QUBITS = {30: 8, 60: 16, 88: 24}
-UTIL_TO_QUBITS = {30: 8, 60: 16}
+# UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
+UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
 # No-M/P (Fig.11a) should match paper utilization mapping.
-# NO_MP_UTIL_TO_QUBITS = {30: 8, 60: 16, 88: 24}
-NO_MP_UTIL_TO_QUBITS = {30: 8, 60: 16}
+# NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
+NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
 
 # Simulation parameters
 SHOTS = 1000
@@ -626,8 +626,8 @@ def run_experiments():
             results['baseline_mp'][util].append(baseline_avg_fid)
             results['baseline_eff_util'][util].append(b_eff)
 
-            solo_fid1, _ = sim.run_solo(circ1, initial_layout=bl1)
-            solo_fid2, _ = sim.run_solo(circ2, initial_layout=bl2)
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=sim._find_good_layout(circ1))
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=sim._find_good_layout(circ2))
 
             baseline_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -655,8 +655,8 @@ def run_experiments():
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
 
-            solo_fid1, _ = sim.run_solo(circ1, initial_layout=ql1)
-            solo_fid2, _ = sim.run_solo(circ2, initial_layout=ql2)
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=sim._find_good_layout(circ1))
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=sim._find_good_layout(circ2))
 
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
