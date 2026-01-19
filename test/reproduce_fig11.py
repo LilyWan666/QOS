@@ -87,7 +87,7 @@ NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
 
 # Simulation parameters
 SHOTS = 1000
-N_PAIRS_PER_UTIL = 6  # Increased for more stable averages
+N_PAIRS_PER_UTIL = 24  # None means use all candidate pairs
 
 # ============================================================================
 # Helper Functions
@@ -518,6 +518,8 @@ def select_baseline_pairs(benchmarks: Dict, target_qubits: int,
                           n_pairs: int) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
     """Baseline: random pairing within target utilization."""
     candidates = generate_candidate_pairs(benchmarks, target_qubits)
+    if n_pairs is None:
+        return candidates
     random.shuffle(candidates)
     return candidates[:n_pairs]
 
@@ -552,6 +554,8 @@ def select_qos_pairs(benchmarks: Dict, target_qubits: int, n_pairs: int,
             print(f"[WARN] QOS scoring failed for {name1}+{name2}: {exc}")
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    if n_pairs is None:
+        return [pair for _, pair in scored]
     return [pair for _, pair in scored[:n_pairs]]
 
 
@@ -593,6 +597,10 @@ def run_experiments():
         'qos_eff_util': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'relative_fidelity_baseline': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'relative_fidelity_qos': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'baseline_depth_diff': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'qos_depth_diff': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'baseline_subcircuit_depths': [],
+        'qos_subcircuit_depths': [],
     }
 
     print("\n[3/4] Running experiments...", flush=True)
@@ -625,9 +633,11 @@ def run_experiments():
             baseline_avg_fid = (bf1 + bf2) / 2
             results['baseline_mp'][util].append(baseline_avg_fid)
             results['baseline_eff_util'][util].append(b_eff)
+            results['baseline_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
+            results['baseline_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
 
-            solo_fid1, _ = sim.run_solo(circ1, initial_layout=sim._find_good_layout(circ1))
-            solo_fid2, _ = sim.run_solo(circ2, initial_layout=sim._find_good_layout(circ2))
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
 
             baseline_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -648,15 +658,24 @@ def run_experiments():
         qos_pairs = select_qos_pairs(benchmarks, target_qubits, N_PAIRS_PER_UTIL, sim.backend)
 
         for i, (circ1, circ2, name1, name2) in enumerate(qos_pairs):
-            print(f"    QOS Pair {i+1}/{len(qos_pairs)}: {name1} + {name2}", flush=True)
+            if util == 60:
+                print(
+                    f"    QOS Pair {i+1}/{len(qos_pairs)}: {name1} + {name2} "
+                    f"(depths {circ1.depth()}/{circ2.depth()})",
+                    flush=True,
+                )
+            else:
+                print(f"    QOS Pair {i+1}/{len(qos_pairs)}: {name1} + {name2}", flush=True)
 
             qf1, qf2, q_eff, ql1, ql2 = sim.run_qos_mp(circ1, circ2)
             qos_avg_fid = (qf1 + qf2) / 2
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
+            results['qos_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
+            results['qos_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
 
-            solo_fid1, _ = sim.run_solo(circ1, initial_layout=sim._find_good_layout(circ1))
-            solo_fid2, _ = sim.run_solo(circ2, initial_layout=sim._find_good_layout(circ2))
+            solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
+            solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
 
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -767,6 +786,88 @@ def create_figure(results: Dict[str, Any]):
     plt.close()
 
 
+def create_depth_cdf(results: Dict[str, Any]):
+    """Create CDF plot of depth differences for baseline vs QOS."""
+    def cdf(values: List[int]) -> Tuple[np.ndarray, np.ndarray]:
+        arr = np.sort(np.array(values, dtype=float))
+        y = np.arange(1, len(arr) + 1) / len(arr)
+        return arr, y
+
+    utils = sorted(UTIL_TO_QUBITS.keys())
+    fig, axes = plt.subplots(1, len(utils), figsize=(6 * len(utils), 4), sharey=True)
+    if len(utils) == 1:
+        axes = [axes]
+
+    any_data = False
+    for ax, util in zip(axes, utils):
+        baseline_vals = results['baseline_depth_diff'][util]
+        qos_vals = results['qos_depth_diff'][util]
+
+        if baseline_vals:
+            x_b, y_b = cdf(baseline_vals)
+            ax.plot(x_b, y_b, label='Baseline M/P', color='steelblue')
+            any_data = True
+
+        if qos_vals:
+            x_q, y_q = cdf(qos_vals)
+            ax.plot(x_q, y_q, label='QOS M/P', color='forestgreen')
+            any_data = True
+
+        ax.set_title(f'Utilization {util}%')
+        ax.set_xlabel('Depth Difference')
+        ax.grid(alpha=0.3)
+        ax.legend(loc='lower right')
+
+    if not any_data:
+        print("No depth-difference data to plot.", flush=True)
+        plt.close(fig)
+        return
+
+    axes[0].set_ylabel('CDF')
+    fig.suptitle('Bundle Depth Difference CDF', y=1.02)
+
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_depth_cdf.png')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Depth CDF saved to: {output_path}")
+
+    plt.close(fig)
+
+
+def create_subcircuit_depth_cdf(results: Dict[str, Any]):
+    """Create CDF plot of subcircuit depths for baseline vs QOS."""
+    baseline_vals = results.get('baseline_subcircuit_depths', [])
+    qos_vals = results.get('qos_subcircuit_depths', [])
+
+    if not baseline_vals and not qos_vals:
+        print("No subcircuit depth data to plot.", flush=True)
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+
+    def plot_cdf(ax_ref, values, label, color):
+        sorted_vals = np.sort(np.array(values, dtype=float))
+        yvals = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
+        ax_ref.plot(sorted_vals, yvals, label=label, color=color)
+
+    if baseline_vals:
+        plot_cdf(ax, baseline_vals, "Baseline subcircuits", "steelblue")
+    if qos_vals:
+        plot_cdf(ax, qos_vals, "QOS subcircuits", "forestgreen")
+
+    ax.set_xlabel("Circuit depth")
+    ax.set_ylabel("CDF")
+    ax.set_title("Subcircuit Depth CDF")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="lower right")
+
+    plt.tight_layout()
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_subcircuit_depth_cdf.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Subcircuit depth CDF saved to: {output_path}", flush=True)
+    plt.close(fig)
+
+
 def save_results(results: Dict[str, Any]):
     """Save results to JSON file."""
     serializable_results = {}
@@ -814,6 +915,8 @@ if __name__ == "__main__":
     results = run_experiments()
     print_summary(results)
     create_figure(results)
+    create_depth_cdf(results)
+    create_subcircuit_depth_cdf(results)
     save_results(results)
 
     print("\nDone!")
