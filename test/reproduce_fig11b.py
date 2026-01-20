@@ -37,6 +37,7 @@ from reproduce_fig11 import (  # noqa: E402
     load_benchmarks,
     select_baseline_pairs,
     select_qos_pairs,
+    generate_candidate_pairs,
     compute_effective_utilization,
     create_depth_cdf,
     create_subcircuit_depth_cdf,
@@ -55,9 +56,14 @@ rcParams["legend.fontsize"] = 11
 # Allow override: FIG11B_PAIRS=12 python reproduce_fig11b.py
 env_pairs = os.getenv("FIG11B_PAIRS")
 if env_pairs is None:
+    N_PAIRS_PER_UTIL = DEFAULT_PAIRS_PER_UTIL
+elif env_pairs.lower() in ("all", "none"):
     N_PAIRS_PER_UTIL = None
 else:
     N_PAIRS_PER_UTIL = int(env_pairs)
+
+FULL_PAIR_MODE = os.getenv("FIG11B_FULL_PAIR_MODE", "0") == "1"
+MATCH_BASELINE_QOS_COUNTS = os.getenv("FIG11B_MATCH_COUNTS", "0") == "1"
 
 
 def run_effective_utilization_only() -> Dict[str, Any]:
@@ -85,8 +91,30 @@ def run_effective_utilization_only() -> Dict[str, Any]:
     for util, target_qubits in UTIL_TO_QUBITS.items():
         print(f"\n  Utilization {util}% ({target_qubits} qubits):", flush=True)
 
-        baseline_pairs = select_baseline_pairs(
-            benchmarks, target_qubits, N_PAIRS_PER_UTIL
+        candidates = generate_candidate_pairs(benchmarks, target_qubits)
+        qos_pairs = select_qos_pairs(
+            benchmarks, target_qubits, N_PAIRS_PER_UTIL, backend
+        )
+        if MATCH_BASELINE_QOS_COUNTS:
+            target_k = len(qos_pairs)
+            baseline_pairs = []
+            if target_k > 0:
+                random.shuffle(candidates)
+                baseline_pairs = candidates[:target_k]
+        else:
+            if FULL_PAIR_MODE:
+                baseline_pairs = candidates
+            else:
+                baseline_pairs = select_baseline_pairs(
+                    benchmarks, target_qubits, N_PAIRS_PER_UTIL, backend
+                )
+        print(
+            f"    Baseline candidates: {len(candidates)} selected: {len(baseline_pairs)}",
+            flush=True,
+        )
+        print(
+            f"    QOS candidates: {len(candidates)} selected: {len(qos_pairs)}",
+            flush=True,
         )
         for i, (circ1, circ2, name1, name2) in enumerate(baseline_pairs):
             print(
@@ -98,10 +126,6 @@ def run_effective_utilization_only() -> Dict[str, Any]:
             results["baseline_eff_util"][util].append(eff)
             results["baseline_depth_diff"][util].append(abs(circ1.depth() - circ2.depth()))
             results["baseline_subcircuit_depths"].extend([circ1.depth(), circ2.depth()])
-
-        qos_pairs = select_qos_pairs(
-            benchmarks, target_qubits, N_PAIRS_PER_UTIL, backend
-        )
         for i, (circ1, circ2, name1, name2) in enumerate(qos_pairs):
             print(
                 f"    QOS Pair {i+1}/{len(qos_pairs)}: "

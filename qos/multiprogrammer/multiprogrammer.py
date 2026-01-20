@@ -143,25 +143,41 @@ class Multiprogrammer(Engine):
 
         return parallelism_result
 
-    def process_qernels(self, qernel_dict: Dict[Qernel, List[Tuple[List[int], str, float]]], threshold: float):
+    def process_qernels(
+        self,
+        qernel_dict: Dict[Qernel, List[Tuple[List[int], Any, float]]],
+        threshold: float,
+        dry_run: bool = False,
+        pair_filter: Any = None,
+        return_ranked: bool = False,
+    ):
         """
         Processes a dictionary of Qernels to compute spatial utilization and matching scores 
         for pairs of Qernels using the same backend. Filters and evaluates pairs based on 
         utilization, matching score, and layout overlap.
 
         Args:
-            qernel_dict (Dict[Qernel, List[Tuple[List[int], str, float]]]): 
+            qernel_dict (Dict[Qernel, List[Tuple[List[int], Any, float]]]):
                 A dictionary where keys are Qernel objects and values are lists of tuples. 
                 Each tuple contains:
                     - A list of integers representing the layout.
-                    - A string representing the backend.
+                    - A backend object (e.g., FakeKolkataV2).
                     - A float representing the estimated fidelity.
             threshold (float): 
                 The minimum matching score required to process a pair of Qernels.
+            dry_run (bool):
+                If True, return the selected pair metadata without invoking policies.
+            pair_filter (callable | None):
+                Optional predicate to filter candidate pairs. Signature:
+                (q1, q2, layout1, layout2, backend) -> bool
+            return_ranked (bool):
+                If True, return all candidate pairs that pass the threshold,
+                ordered by spatial utilization (descending).
 
         Returns:
-            None: 
-                The bundled Qernel.
+            Qernel | tuple | list | None:
+                The bundled Qernel, the selected pair metadata when dry_run=True,
+                or a ranked list of pair metadata when return_ranked=True.
 
         Behavior:
             - Computes spatial utilization for pairs of Qernels using the same backend.
@@ -172,10 +188,16 @@ class Multiprogrammer(Engine):
                 - Calls `restrict_policy()` if layouts do not overlap.
                 - Calls `re_evaluation_policy()` if layouts overlap.
         """
-        from qos.multiprogrammer.tools import check_layout_overlap
-
         results = []
         selected_qernel = None
+        selected_pair = None
+        ranked_pairs = []
+
+        def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
+            for q in layout1:
+                if q in layout2:
+                    return True
+            return False
 
         # Iterate over the dictionary to compute spatial utilization for each pair with the same backend
         for q1, q1_data in qernel_dict.items():
@@ -187,6 +209,9 @@ class Multiprogrammer(Engine):
                 for layout1, backend1, _ in q1_data:
                     for layout2, backend2, _ in q2_data:
                         if backend1 == backend2:
+                            if pair_filter and not pair_filter(q1, q2, layout1, layout2, backend1):
+                                continue
+
                             # Compute spatial utilization
                             spatial_util = self.spatial_utilization(q1, q2, backend1)
 
@@ -204,12 +229,27 @@ class Multiprogrammer(Engine):
 
             # Check if the matching score is over the threshold
             if matching_score > threshold:
+                if return_ranked:
+                    ranked_pairs.append(
+                        (q1, q2, layout1, layout2, matching_score, spatial_util, backend)
+                    )
+                    continue
+                if dry_run:
+                    selected_pair = (q1, q2, layout1, layout2, matching_score, spatial_util, backend)
+                    break
                 # Check if the layouts have common elements
                 if not check_layout_overlap(layout1, layout2):
-                    selected_qernel = self.restrict_policy()
+                    selected_qernel = self.restrict_policy([q1, q2], error_limit=threshold)
                 else:
-                    selected_qernel = self.re_evaluation_policy()
+                    selected_qernel = self.re_evaluation_policy(q1, q2)
+                if selected_qernel is not None:
+                    break
 
+        if return_ranked:
+            ranked_pairs.sort(key=lambda x: (x[4], x[5]), reverse=True)
+            return ranked_pairs
+        if dry_run:
+            return selected_pair
         return selected_qernel
 
     def run(self, qernels: List[Qernel]) -> List[Qernel]:

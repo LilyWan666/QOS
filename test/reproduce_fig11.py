@@ -88,6 +88,9 @@ NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
 # Simulation parameters
 SHOTS = 1000
 N_PAIRS_PER_UTIL = 24  # None means use all candidate pairs
+BASELINE_PAIRING_MODE = "random"  # "ranked" or "random"
+QOS_PAIRING_MODE = "process_qernels"  # "process_qernels" or "score_topk"
+QOS_MATCH_THRESHOLD = 0.0
 
 # ============================================================================
 # Helper Functions
@@ -515,9 +518,53 @@ def generate_candidate_pairs(benchmarks: Dict, target_qubits: int,
 
 
 def select_baseline_pairs(benchmarks: Dict, target_qubits: int,
-                          n_pairs: int) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
-    """Baseline: random pairing within target utilization."""
+                          n_pairs: int, backend=None) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    """Baseline: ranked or random pairing within target utilization."""
     candidates = generate_candidate_pairs(benchmarks, target_qubits)
+    if not candidates:
+        return []
+
+    if BASELINE_PAIRING_MODE == "ranked" and backend is not None:
+        try:
+            utility = baseline_mp.compute_qubit_utility(backend)
+        except Exception:
+            coupling_map = list(backend.coupling_map)
+            utility = {}
+            for qubit in range(backend.num_qubits):
+                neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
+                            [pair[0] for pair in coupling_map if pair[1] == qubit]
+                num_links = len(neighbors)
+                error_sum = max(num_links * 0.01, 0.01)
+                utility[qubit] = num_links / error_sum if error_sum > 0 else 0
+
+        backend_props = {
+            "coupling_map": backend.coupling_map,
+            "utility": utility,
+        }
+
+        scored = []
+        for circ1, circ2, name1, name2 in candidates:
+            try:
+                programs = [circ1, circ2]
+                program_analysis = baseline_mp.analyze_programs(programs)
+                scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
+                    programs, program_analysis, backend_props
+                )
+                if len(scheduled_programs) == 2:
+                    sched1, sched2 = scheduled_programs
+                else:
+                    sched1, sched2 = circ1, circ2
+            except Exception:
+                sched1, sched2 = circ1, circ2
+
+            eff = compute_effective_utilization(sched1, sched2, backend)
+            scored.append((eff, (circ1, circ2, name1, name2)))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if n_pairs is None:
+            return [pair for _, pair in scored]
+        return [pair for _, pair in scored[:n_pairs]]
+
     if n_pairs is None:
         return candidates
     random.shuffle(candidates)
@@ -527,6 +574,9 @@ def select_baseline_pairs(benchmarks: Dict, target_qubits: int,
 def select_qos_pairs(benchmarks: Dict, target_qubits: int, n_pairs: int,
                      backend) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
     """QOS: choose highest matching-score pairs."""
+    if QOS_PAIRING_MODE == "process_qernels":
+        return select_qos_pairs_process(benchmarks, target_qubits, n_pairs, backend)
+
     candidates = generate_candidate_pairs(benchmarks, target_qubits)
     if not candidates:
         return []
@@ -557,6 +607,62 @@ def select_qos_pairs(benchmarks: Dict, target_qubits: int, n_pairs: int,
     if n_pairs is None:
         return [pair for _, pair in scored]
     return [pair for _, pair in scored[:n_pairs]]
+
+
+def select_qos_pairs_process(benchmarks: Dict, target_qubits: int, n_pairs: int,
+                             backend) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    """QOS: select pairs using process_qernels (pairwise filtering)."""
+    mp = Multiprogrammer()
+    analyser = SupermarqFeaturesAnalysisPass()
+
+    qernel_pool = {}
+    for name, sizes in benchmarks.items():
+        for nq, circ in sizes.items():
+            if nq > target_qubits:
+                continue
+            q = Qernel(circ)
+            analyser.run(q)
+            qernel_pool[q] = {
+                "circuit": circ,
+                "name": f"{name}-{nq}",
+                "layout": list(range(nq)),
+            }
+
+    def pair_filter(q1, q2, _l1, _l2, _backend):
+        return (q1.get_circuit().num_qubits + q2.get_circuit().num_qubits) == target_qubits
+
+    qernel_dict = {
+        q: [(meta["layout"], backend, 1.0)]
+        for q, meta in qernel_pool.items()
+    }
+    ranked = mp.process_qernels(
+        qernel_dict,
+        threshold=QOS_MATCH_THRESHOLD,
+        dry_run=True,
+        pair_filter=pair_filter,
+        return_ranked=True,
+    )
+    if not ranked:
+        return []
+
+    selected = []
+    seen = set()
+    for q1, q2, _layout1, _layout2, _score, _spatial_util, _backend in ranked:
+        key = tuple(sorted((id(q1), id(q2))))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        meta1 = qernel_pool.get(q1)
+        meta2 = qernel_pool.get(q2)
+        if not meta1 or not meta2:
+            continue
+
+        selected.append((meta1["circuit"], meta2["circuit"], meta1["name"], meta2["name"]))
+        if n_pairs is not None and len(selected) >= n_pairs:
+            break
+
+    return selected
 
 
 def generate_solo_circuits(benchmarks: Dict, target_qubits: int,
@@ -593,6 +699,8 @@ def run_experiments():
         'no_mp': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_mp': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'qos_mp': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'qos_pairing_only': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'qos_layout_only': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_eff_util': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'qos_eff_util': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'relative_fidelity_baseline': {util: [] for util in UTIL_TO_QUBITS.keys()},
@@ -624,7 +732,9 @@ def run_experiments():
     for util, target_qubits in UTIL_TO_QUBITS.items():
         print(f"\n  Utilization {util}% ({target_qubits} qubits):", flush=True)
 
-        baseline_pairs = select_baseline_pairs(benchmarks, target_qubits, N_PAIRS_PER_UTIL)
+        baseline_pairs = select_baseline_pairs(
+            benchmarks, target_qubits, N_PAIRS_PER_UTIL, sim.backend
+        )
 
         for i, (circ1, circ2, name1, name2) in enumerate(baseline_pairs):
             print(f"    Baseline Pair {i+1}/{len(baseline_pairs)}: {name1} + {name2}", flush=True)
@@ -635,6 +745,13 @@ def run_experiments():
             results['baseline_eff_util'][util].append(b_eff)
             results['baseline_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
             results['baseline_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
+
+            try:
+                qf1, qf2, _, _, _ = sim.run_qos_mp(circ1, circ2)
+                qos_layout_avg_fid = (qf1 + qf2) / 2
+                results['qos_layout_only'][util].append(qos_layout_avg_fid)
+            except Exception as exc:
+                print(f"[WARN] QOS layout-only failed: {exc}", flush=True)
 
             solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
             solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
@@ -673,6 +790,13 @@ def run_experiments():
             results['qos_eff_util'][util].append(q_eff)
             results['qos_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
             results['qos_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
+
+            try:
+                pf1, pf2, _, _, _ = sim.run_baseline_mp(circ1, circ2)
+                qos_pairing_avg_fid = (pf1 + pf2) / 2
+                results['qos_pairing_only'][util].append(qos_pairing_avg_fid)
+            except Exception as exc:
+                print(f"[WARN] QOS pairing-only failed: {exc}", flush=True)
 
             solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
             solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
@@ -783,6 +907,42 @@ def create_figure(results: Dict[str, Any]):
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nFigure saved to: {output_path}")
 
+    plt.close()
+
+
+def create_pairing_layout_figure(results: Dict[str, Any]):
+    """Visualize pairing vs layout contributions for QOS."""
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
+
+    utils = sorted(UTIL_TO_QUBITS.keys())
+    x = np.arange(len(utils))
+    width = 0.16
+
+    no_mp_means = [np.mean(results['no_mp'][u]) for u in utils]
+    baseline_means = [np.mean(results['baseline_mp'][u]) for u in utils]
+    pairing_means = [np.mean(results['qos_pairing_only'][u]) for u in utils]
+    layout_means = [np.mean(results['qos_layout_only'][u]) for u in utils]
+    qos_means = [np.mean(results['qos_mp'][u]) for u in utils]
+
+    ax.bar(x - 2 * width, no_mp_means, width, label='No M/P', color='lightgray')
+    ax.bar(x - 1 * width, baseline_means, width, label='Baseline', color='steelblue')
+    ax.bar(x + 0 * width, pairing_means, width, label='QOS (pairing)', color='lightskyblue')
+    ax.bar(x + 1 * width, layout_means, width, label='QOS (layout)', color='mediumseagreen')
+    ax.bar(x + 2 * width, qos_means, width, label='QOS (full)', color='forestgreen')
+
+    ax.set_xlabel('Utilization (%)')
+    ax.set_ylabel('Fidelity')
+    ax.set_title('Pairing vs Layout Contributions (Ablation)')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{u}%' for u in utils])
+    ax.set_ylim(0, 1.0)
+    ax.legend(loc='upper right', ncol=2)
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_pairing_layout.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Pairing/Layout figure saved to: {output_path}")
     plt.close()
 
 
@@ -897,6 +1057,10 @@ def print_summary(results: Dict[str, Any]):
         print(f"  No M/P Fidelity:       {np.mean(results['no_mp'][util]):.4f} +/- {np.std(results['no_mp'][util]):.4f}")
         print(f"  Baseline M/P Fidelity: {np.mean(results['baseline_mp'][util]):.4f} +/- {np.std(results['baseline_mp'][util]):.4f}")
         print(f"  QOS M/P Fidelity:      {np.mean(results['qos_mp'][util]):.4f} +/- {np.std(results['qos_mp'][util]):.4f}")
+        if results['qos_pairing_only'][util]:
+            print(f"  QOS Pairing Fidelity:  {np.mean(results['qos_pairing_only'][util]):.4f} +/- {np.std(results['qos_pairing_only'][util]):.4f}")
+        if results['qos_layout_only'][util]:
+            print(f"  QOS Layout Fidelity:   {np.mean(results['qos_layout_only'][util]):.4f} +/- {np.std(results['qos_layout_only'][util]):.4f}")
         print(f"  Baseline Eff. Util:    {np.mean(results['baseline_eff_util'][util]):.1f}%")
         print(f"  QOS Eff. Util:         {np.mean(results['qos_eff_util'][util]):.1f}%")
 
@@ -915,6 +1079,7 @@ if __name__ == "__main__":
     results = run_experiments()
     print_summary(results)
     create_figure(results)
+    create_pairing_layout_figure(results)
     create_depth_cdf(results)
     create_subcircuit_depth_cdf(results)
     save_results(results)
