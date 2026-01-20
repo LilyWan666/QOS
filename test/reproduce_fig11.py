@@ -91,6 +91,7 @@ N_PAIRS_PER_UTIL = 24  # None means use all candidate pairs
 BASELINE_PAIRING_MODE = "random"  # "ranked" or "random"
 QOS_PAIRING_MODE = "process_qernels"  # "process_qernels" or "score_topk"
 QOS_MATCH_THRESHOLD = 0.0
+SCATTER_LAYOUT_MODE = "qos"  # "qos" to fix layout, "baseline" for baseline layout
 
 # ============================================================================
 # Helper Functions
@@ -709,6 +710,8 @@ def run_experiments():
         'qos_depth_diff': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_pair_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'qos_pair_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'baseline_pair_solo_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'qos_pair_solo_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_subcircuit_depths': [],
         'qos_subcircuit_depths': [],
     }
@@ -758,6 +761,7 @@ def run_experiments():
 
             solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
             solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
+            results['baseline_pair_solo_fidelity'][util].extend([solo_fid1, solo_fid2])
 
             baseline_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -804,6 +808,7 @@ def run_experiments():
 
             solo_fid1, _ = sim.run_solo(circ1, initial_layout=None)
             solo_fid2, _ = sim.run_solo(circ2, initial_layout=None)
+            results['qos_pair_solo_fidelity'][util].extend([solo_fid1, solo_fid2])
 
             qos_rel = 0
             if solo_fid1 > 0 and solo_fid2 > 0:
@@ -1008,15 +1013,30 @@ def create_depth_fidelity_scatter(results: Dict[str, Any]):
     any_data = False
     for ax, util in zip(axes, utils):
         b_x = results['baseline_depth_diff'][util]
-        b_y = results['baseline_pair_fidelity'][util]
+        if SCATTER_LAYOUT_MODE == "qos":
+            b_y = results['qos_layout_only'][util]
+            b_label = 'Baseline M/P (QOS layout)'
+        else:
+            b_y = results['baseline_pair_fidelity'][util]
+            b_label = 'Baseline M/P'
+        b_y_solo = results['baseline_pair_solo_fidelity'][util]
         q_x = results['qos_depth_diff'][util]
         q_y = results['qos_pair_fidelity'][util]
+        q_y_solo = results['qos_pair_solo_fidelity'][util]
 
         if b_x and b_y:
-            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label='Baseline M/P')
+            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label=b_label)
+            any_data = True
+        if b_x and b_y_solo and len(b_x) == len(b_y_solo) // 2:
+            b_x_solo = [v for v in b_x for _ in (0, 1)]
+            ax.scatter(b_x_solo, b_y_solo, s=20, alpha=0.6, color='steelblue', marker='x', label='Baseline Solo')
             any_data = True
         if q_x and q_y:
             ax.scatter(q_x, q_y, s=20, alpha=0.6, color='forestgreen', label='QOS M/P')
+            any_data = True
+        if q_x and q_y_solo and len(q_x) == len(q_y_solo) // 2:
+            q_x_solo = [v for v in q_x for _ in (0, 1)]
+            ax.scatter(q_x_solo, q_y_solo, s=20, alpha=0.6, color='forestgreen', marker='x', label='QOS Solo')
             any_data = True
 
         ax.set_title(f'Utilization {util}%')
@@ -1049,15 +1069,30 @@ def create_eff_util_fidelity_scatter(results: Dict[str, Any]):
     any_data = False
     for ax, util in zip(axes, utils):
         b_x = results['baseline_eff_util'][util]
-        b_y = results['baseline_pair_fidelity'][util]
+        if SCATTER_LAYOUT_MODE == "qos":
+            b_y = results['qos_layout_only'][util]
+            b_label = 'Baseline M/P (QOS layout)'
+        else:
+            b_y = results['baseline_pair_fidelity'][util]
+            b_label = 'Baseline M/P'
+        b_y_solo = results['baseline_pair_solo_fidelity'][util]
         q_x = results['qos_eff_util'][util]
         q_y = results['qos_pair_fidelity'][util]
+        q_y_solo = results['qos_pair_solo_fidelity'][util]
 
         if b_x and b_y:
-            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label='Baseline M/P')
+            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label=b_label)
+            any_data = True
+        if b_x and b_y_solo and len(b_x) == len(b_y_solo) // 2:
+            b_x_solo = [v for v in b_x for _ in (0, 1)]
+            ax.scatter(b_x_solo, b_y_solo, s=20, alpha=0.6, color='steelblue', marker='x', label='Baseline Solo')
             any_data = True
         if q_x and q_y:
             ax.scatter(q_x, q_y, s=20, alpha=0.6, color='forestgreen', label='QOS M/P')
+            any_data = True
+        if q_x and q_y_solo and len(q_x) == len(q_y_solo) // 2:
+            q_x_solo = [v for v in q_x for _ in (0, 1)]
+            ax.scatter(q_x_solo, q_y_solo, s=20, alpha=0.6, color='forestgreen', marker='x', label='QOS Solo')
             any_data = True
 
         ax.set_title(f'Utilization {util}%')
