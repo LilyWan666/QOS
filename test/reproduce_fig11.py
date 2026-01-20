@@ -707,6 +707,8 @@ def run_experiments():
         'relative_fidelity_qos': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_depth_diff': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'qos_depth_diff': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'baseline_pair_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
+        'qos_pair_fidelity': {util: [] for util in UTIL_TO_QUBITS.keys()},
         'baseline_subcircuit_depths': [],
         'qos_subcircuit_depths': [],
     }
@@ -744,6 +746,7 @@ def run_experiments():
             results['baseline_mp'][util].append(baseline_avg_fid)
             results['baseline_eff_util'][util].append(b_eff)
             results['baseline_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
+            results['baseline_pair_fidelity'][util].append(baseline_avg_fid)
             results['baseline_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
 
             try:
@@ -789,6 +792,7 @@ def run_experiments():
             results['qos_mp'][util].append(qos_avg_fid)
             results['qos_eff_util'][util].append(q_eff)
             results['qos_depth_diff'][util].append(abs(circ1.depth() - circ2.depth()))
+            results['qos_pair_fidelity'][util].append(qos_avg_fid)
             results['qos_subcircuit_depths'].extend([circ1.depth(), circ2.depth()])
 
             try:
@@ -994,6 +998,88 @@ def create_depth_cdf(results: Dict[str, Any]):
     plt.close(fig)
 
 
+def create_depth_fidelity_scatter(results: Dict[str, Any]):
+    """Scatter plot of depth difference vs pair fidelity for baseline and QOS."""
+    utils = sorted(UTIL_TO_QUBITS.keys())
+    fig, axes = plt.subplots(1, len(utils), figsize=(6 * len(utils), 4), sharey=True)
+    if len(utils) == 1:
+        axes = [axes]
+
+    any_data = False
+    for ax, util in zip(axes, utils):
+        b_x = results['baseline_depth_diff'][util]
+        b_y = results['baseline_pair_fidelity'][util]
+        q_x = results['qos_depth_diff'][util]
+        q_y = results['qos_pair_fidelity'][util]
+
+        if b_x and b_y:
+            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label='Baseline M/P')
+            any_data = True
+        if q_x and q_y:
+            ax.scatter(q_x, q_y, s=20, alpha=0.6, color='forestgreen', label='QOS M/P')
+            any_data = True
+
+        ax.set_title(f'Utilization {util}%')
+        ax.set_xlabel('Depth Difference')
+        ax.grid(alpha=0.3)
+        ax.legend(loc='lower right')
+
+    if not any_data:
+        print("No depth/fidelity data to plot.", flush=True)
+        plt.close(fig)
+        return
+
+    axes[0].set_ylabel('Pair Fidelity')
+    fig.suptitle('Depth Difference vs Pair Fidelity', y=1.02)
+
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_depth_fidelity.png')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Depth/Fidelity scatter saved to: {output_path}")
+    plt.close(fig)
+
+
+def create_eff_util_fidelity_scatter(results: Dict[str, Any]):
+    """Scatter plot of effective utilization vs pair fidelity for baseline and QOS."""
+    utils = sorted(UTIL_TO_QUBITS.keys())
+    fig, axes = plt.subplots(1, len(utils), figsize=(6 * len(utils), 4), sharey=True)
+    if len(utils) == 1:
+        axes = [axes]
+
+    any_data = False
+    for ax, util in zip(axes, utils):
+        b_x = results['baseline_eff_util'][util]
+        b_y = results['baseline_pair_fidelity'][util]
+        q_x = results['qos_eff_util'][util]
+        q_y = results['qos_pair_fidelity'][util]
+
+        if b_x and b_y:
+            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label='Baseline M/P')
+            any_data = True
+        if q_x and q_y:
+            ax.scatter(q_x, q_y, s=20, alpha=0.6, color='forestgreen', label='QOS M/P')
+            any_data = True
+
+        ax.set_title(f'Utilization {util}%')
+        ax.set_xlabel('Effective Utilization (%)')
+        ax.grid(alpha=0.3)
+        ax.legend(loc='lower right')
+
+    if not any_data:
+        print("No effective-utilization/fidelity data to plot.", flush=True)
+        plt.close(fig)
+        return
+
+    axes[0].set_ylabel('Pair Fidelity')
+    fig.suptitle('Effective Utilization vs Pair Fidelity', y=1.02)
+
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_eff_util_fidelity.png')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"EffUtil/Fidelity scatter saved to: {output_path}")
+    plt.close(fig)
+
+
 def create_subcircuit_depth_cdf(results: Dict[str, Any]):
     """Create CDF plot of subcircuit depths for baseline vs QOS."""
     baseline_vals = results.get('baseline_subcircuit_depths', [])
@@ -1081,6 +1167,8 @@ if __name__ == "__main__":
     create_figure(results)
     create_pairing_layout_figure(results)
     create_depth_cdf(results)
+    create_depth_fidelity_scatter(results)
+    create_eff_util_fidelity_scatter(results)
     create_subcircuit_depth_cdf(results)
     save_results(results)
 
