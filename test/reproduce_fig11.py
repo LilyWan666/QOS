@@ -93,6 +93,16 @@ QOS_PAIRING_MODE = "process_qernels"  # "process_qernels" or "score_topk"
 QOS_MATCH_THRESHOLD = 0.0
 SCATTER_LAYOUT_MODE = "qos"  # "qos" to fix layout, "baseline" for baseline layout
 
+# Pareto analysis (pairing gap visualization)
+RUN_FIG11_EXPERIMENTS = True
+RUN_PARETO_ANALYSIS = True
+PARETO_UTIL = 60
+PARETO_LAYOUT_MODE = "baseline"  # "baseline" or "qos"
+PARETO_SHOW_ALL = True
+PARETO_MAX_CANDIDATES = None
+PARETO_RANDOM_SAMPLE = None  # None uses N_PAIRS_PER_UTIL
+PARETO_QOS_SAMPLE = None  # None uses N_PAIRS_PER_UTIL
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -825,6 +835,121 @@ def run_experiments():
     return results
 
 
+def _sample_pairs(pairs: List[Tuple[QuantumCircuit, QuantumCircuit, str, str]],
+                  sample_size: int) -> List[Tuple[QuantumCircuit, QuantumCircuit, str, str]]:
+    if sample_size is None or sample_size >= len(pairs):
+        return list(pairs)
+    return random.sample(pairs, sample_size)
+
+
+def _compute_pair_metrics(sim: MultiprogrammingSimulator,
+                          pairs: List[Tuple[QuantumCircuit, QuantumCircuit, str, str]],
+                          layout_mode: str,
+                          label: str) -> Tuple[List[float], List[float]]:
+    eff_vals = []
+    fid_vals = []
+    total = len(pairs)
+    if total == 0:
+        return eff_vals, fid_vals
+
+    for i, (circ1, circ2, _name1, _name2) in enumerate(pairs, start=1):
+        if layout_mode == "qos":
+            f1, f2, eff, _l1, _l2 = sim.run_qos_mp(circ1, circ2)
+        else:
+            f1, f2, eff, _l1, _l2 = sim.run_baseline_mp(circ1, circ2)
+        eff_vals.append(eff)
+        fid_vals.append((f1 + f2) / 2)
+
+        if i % 20 == 0 or i == total:
+            print(f"    {label} {i}/{total}", flush=True)
+
+    return eff_vals, fid_vals
+
+
+def _pareto_frontier(xs: List[float], ys: List[float]) -> Tuple[List[float], List[float]]:
+    if not xs or not ys:
+        return [], []
+    points = sorted(zip(xs, ys), key=lambda p: p[0])
+    frontier_x = []
+    frontier_y = []
+    best_y = -1.0
+    for x, y in points:
+        if y >= best_y:
+            frontier_x.append(x)
+            frontier_y.append(y)
+            best_y = y
+    return frontier_x, frontier_y
+
+
+def create_pareto_eff_util_scatter():
+    """Create Pareto scatter plot for pairing gap analysis."""
+    if not RUN_PARETO_ANALYSIS:
+        return
+
+    print("\n[Pareto] Preparing effective utilization vs fidelity scatter...", flush=True)
+    util = PARETO_UTIL
+    target_qubits = UTIL_TO_QUBITS.get(util)
+    if target_qubits is None:
+        print(f"[WARN] PARETO_UTIL={util} is not configured in UTIL_TO_QUBITS.", flush=True)
+        return
+
+    benchmarks = load_benchmarks()
+    sim = MultiprogrammingSimulator()
+
+    candidates = generate_candidate_pairs(benchmarks, target_qubits)
+    if not candidates:
+        print("[WARN] No candidate pairs found for pareto plot.", flush=True)
+        return
+
+    if PARETO_MAX_CANDIDATES is not None:
+        random.shuffle(candidates)
+        candidates = candidates[:PARETO_MAX_CANDIDATES]
+
+    print(f"[Pareto] Evaluating {len(candidates)} candidate pairs...", flush=True)
+    all_eff, all_fid = _compute_pair_metrics(
+        sim, candidates, PARETO_LAYOUT_MODE, "All pairs"
+    )
+
+    random_n = PARETO_RANDOM_SAMPLE if PARETO_RANDOM_SAMPLE is not None else N_PAIRS_PER_UTIL
+    random_pairs = _sample_pairs(candidates, random_n)
+    print(f"[Pareto] Evaluating {len(random_pairs)} random pairs...", flush=True)
+    rand_eff, rand_fid = _compute_pair_metrics(
+        sim, random_pairs, PARETO_LAYOUT_MODE, "Random pairs"
+    )
+
+    qos_n = PARETO_QOS_SAMPLE if PARETO_QOS_SAMPLE is not None else N_PAIRS_PER_UTIL
+    qos_pairs = select_qos_pairs(benchmarks, target_qubits, qos_n, sim.backend)
+    print(f"[Pareto] Evaluating {len(qos_pairs)} QOS pairs...", flush=True)
+    qos_eff, qos_fid = _compute_pair_metrics(
+        sim, qos_pairs, PARETO_LAYOUT_MODE, "QOS pairs"
+    )
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+
+    if PARETO_SHOW_ALL and all_eff:
+        ax.scatter(all_eff, all_fid, s=18, alpha=0.25, color='gray', label='All candidate pairs')
+        fx, fy = _pareto_frontier(all_eff, all_fid)
+        if fx and fy:
+            ax.plot(fx, fy, color='black', linewidth=1.2, label='Pareto frontier')
+
+    if rand_eff:
+        ax.scatter(rand_eff, rand_fid, s=30, alpha=0.8, color='steelblue', label='Random pairs')
+    if qos_eff:
+        ax.scatter(qos_eff, qos_fid, s=30, alpha=0.8, color='forestgreen', label='QOS pairs')
+
+    layout_label = "baseline layout" if PARETO_LAYOUT_MODE == "baseline" else "QOS layout"
+    ax.set_title(f'Pareto: Eff. Util vs Fidelity ({util}% util, {layout_label})')
+    ax.set_xlabel('Effective Utilization (%)')
+    ax.set_ylabel('Pair Fidelity')
+    ax.grid(alpha=0.3)
+    ax.legend(loc='lower right')
+
+    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_eff_util_fidelity_pareto.png')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Pareto scatter saved to: {output_path}")
+    plt.close(fig)
+
 def create_figure(results: Dict[str, Any]):
     """Create the 3-subplot Figure 11."""
     print("\n[4/4] Generating figure...", flush=True)
@@ -1004,59 +1129,91 @@ def create_depth_cdf(results: Dict[str, Any]):
 
 
 def create_depth_fidelity_scatter(results: Dict[str, Any]):
-    """Scatter plot of depth difference vs pair fidelity for baseline and QOS."""
+    """Box plots of pair fidelity to highlight mean and range."""
     utils = sorted(UTIL_TO_QUBITS.keys())
-    fig, axes = plt.subplots(1, len(utils), figsize=(6 * len(utils), 4), sharey=True)
-    if len(utils) == 1:
-        axes = [axes]
 
-    any_data = False
-    for ax, util in zip(axes, utils):
-        b_x = results['baseline_depth_diff'][util]
-        if SCATTER_LAYOUT_MODE == "qos":
-            b_y = results['qos_layout_only'][util]
-            b_label = 'Baseline M/P (QOS layout)'
+    def render_plot(kind: str):
+        fig, axes = plt.subplots(1, len(utils), figsize=(6 * len(utils), 4.5), sharey=True)
+        if len(utils) == 1:
+            axes = [axes]
+
+        any_data = False
+        for ax, util in zip(axes, utils):
+            if SCATTER_LAYOUT_MODE == "qos":
+                b_y = results['qos_layout_only'][util]
+                b_label = 'Baseline M/P\n(QOS layout)'
+            else:
+                b_y = results['baseline_pair_fidelity'][util]
+                b_label = 'Baseline M/P'
+            q_y = results['qos_pair_fidelity'][util]
+            q_y_solo = results['qos_pair_solo_fidelity'][util]
+
+            data = []
+            labels = []
+            colors = []
+            if kind == "mp":
+                if b_y:
+                    data.append(b_y)
+                    labels.append(b_label)
+                    colors.append('steelblue')
+                if q_y:
+                    data.append(q_y)
+                    labels.append('QOS M/P')
+                    colors.append('forestgreen')
+            else:
+                if q_y:
+                    data.append(q_y)
+                    labels.append('QOS M/P')
+                    colors.append('forestgreen')
+                if q_y_solo:
+                    data.append(q_y_solo)
+                    labels.append('QOS Solo')
+                    colors.append('darkseagreen')
+
+            if data:
+                box = ax.boxplot(
+                    data,
+                    labels=labels,
+                    showmeans=True,
+                    whis=(0, 100),
+                    patch_artist=True,
+                    meanprops=dict(marker='D', markerfacecolor='black', markeredgecolor='black', markersize=4),
+                    medianprops=dict(color='black'),
+                    boxprops=dict(linewidth=1.0),
+                    whiskerprops=dict(linewidth=1.0),
+                    capprops=dict(linewidth=1.0),
+                )
+                for patch, color in zip(box['boxes'], colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.6)
+                any_data = True
+
+            ax.set_title(f'Utilization {util}%')
+            ax.set_xlabel('Method')
+            ax.grid(axis='y', alpha=0.3)
+            ax.tick_params(axis='x', labelrotation=12)
+
+        if not any_data:
+            print("No depth/fidelity data to plot.", flush=True)
+            plt.close(fig)
+            return None
+
+        axes[0].set_ylabel('Pair Fidelity')
+        if kind == "mp":
+            fig.suptitle('Pair Fidelity Distribution (Baseline M/P vs QOS M/P)', y=1.02)
+            output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_depth_fidelity_mp.png')
         else:
-            b_y = results['baseline_pair_fidelity'][util]
-            b_label = 'Baseline M/P'
-        b_y_solo = results['baseline_pair_solo_fidelity'][util]
-        q_x = results['qos_depth_diff'][util]
-        q_y = results['qos_pair_fidelity'][util]
-        q_y_solo = results['qos_pair_solo_fidelity'][util]
+            fig.suptitle('Pair Fidelity Distribution (QOS Solo vs QOS M/P)', y=1.02)
+            output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_depth_fidelity_qos.png')
 
-        if b_x and b_y:
-            ax.scatter(b_x, b_y, s=20, alpha=0.6, color='steelblue', label=b_label)
-            any_data = True
-        if b_x and b_y_solo and len(b_x) == len(b_y_solo) // 2:
-            b_x_solo = [v for v in b_x for _ in (0, 1)]
-            ax.scatter(b_x_solo, b_y_solo, s=20, alpha=0.6, color='steelblue', marker='x', label='Baseline Solo')
-            any_data = True
-        if q_x and q_y:
-            ax.scatter(q_x, q_y, s=20, alpha=0.6, color='forestgreen', label='QOS M/P')
-            any_data = True
-        if q_x and q_y_solo and len(q_x) == len(q_y_solo) // 2:
-            q_x_solo = [v for v in q_x for _ in (0, 1)]
-            ax.scatter(q_x_solo, q_y_solo, s=20, alpha=0.6, color='forestgreen', marker='x', label='QOS Solo')
-            any_data = True
-
-        ax.set_title(f'Utilization {util}%')
-        ax.set_xlabel('Depth Difference')
-        ax.grid(alpha=0.3)
-        ax.legend(loc='lower right')
-
-    if not any_data:
-        print("No depth/fidelity data to plot.", flush=True)
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Depth/Fidelity box plot saved to: {output_path}")
         plt.close(fig)
-        return
+        return output_path
 
-    axes[0].set_ylabel('Pair Fidelity')
-    fig.suptitle('Depth Difference vs Pair Fidelity', y=1.02)
-
-    output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_depth_fidelity.png')
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"Depth/Fidelity scatter saved to: {output_path}")
-    plt.close(fig)
+    render_plot("mp")
+    render_plot("qos")
 
 
 def create_eff_util_fidelity_scatter(results: Dict[str, Any]):
@@ -1197,14 +1354,19 @@ if __name__ == "__main__":
     print("QOS Paper - Figure 11 Reproduction", flush=True)
     print("Multiprogramming Results\n", flush=True)
 
-    results = run_experiments()
-    print_summary(results)
-    create_figure(results)
-    create_pairing_layout_figure(results)
-    create_depth_cdf(results)
-    create_depth_fidelity_scatter(results)
-    create_eff_util_fidelity_scatter(results)
-    create_subcircuit_depth_cdf(results)
-    save_results(results)
+    results = None
+    if RUN_FIG11_EXPERIMENTS:
+        results = run_experiments()
+        print_summary(results)
+        create_figure(results)
+        create_pairing_layout_figure(results)
+        create_depth_cdf(results)
+        create_depth_fidelity_scatter(results)
+        create_eff_util_fidelity_scatter(results)
+        create_subcircuit_depth_cdf(results)
+        save_results(results)
+
+    if RUN_PARETO_ANALYSIS:
+        create_pareto_eff_util_scatter()
 
     print("\nDone!")
