@@ -36,7 +36,7 @@ from matplotlib import rcParams
 from qiskit import QuantumCircuit, transpile
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit_aer import AerSimulator
-from qiskit_aer.noise import NoiseModel, depolarizing_error
+from qiskit_aer.noise import NoiseModel, depolarizing_error, ReadoutError
 from qiskit_ibm_runtime.fake_provider import FakeKolkataV2
 
 # Suppress warnings
@@ -93,15 +93,27 @@ QOS_PAIRING_MODE = "process_qernels"  # "process_qernels" or "score_topk"
 QOS_MATCH_THRESHOLD = 0.0
 SCATTER_LAYOUT_MODE = "qos"  # "qos" to fix layout, "baseline" for baseline layout
 
+# Noise model presets from IBM QPU metrics (median / layered 2Q error, median readout error)
+NOISE_QPU = "ibm_marrakesh"  # "ibm_marrakesh" or "ibm_torino"
+NOISE_2Q_MODE = "layered"  # "median" or "layered"
+NOISE_1Q_FRACTION = 0.1  # 1Q error is not provided; use a fraction of 2Q error
+
 # Pareto analysis (pairing gap visualization)
-RUN_FIG11_EXPERIMENTS = True
+RUN_FIG11_EXPERIMENTS = False
 RUN_PARETO_ANALYSIS = True
 PARETO_UTIL = 60
-PARETO_LAYOUT_MODE = "baseline"  # "baseline" or "qos"
+PARETO_LAYOUT_MODE = "qos"  # "baseline" or "qos"
 PARETO_SHOW_ALL = True
 PARETO_MAX_CANDIDATES = None
 PARETO_RANDOM_SAMPLE = None  # None uses N_PAIRS_PER_UTIL
 PARETO_QOS_SAMPLE = None  # None uses N_PAIRS_PER_UTIL
+PARETO_COMPARE_LAYOUTS = True
+PARETO_TOPRIGHT_METHOD = "normalized_sum"  # "normalized_sum" or "lexicographic"
+PARETO_LABEL_TOPK = 10
+PARETO_LABEL_MAX_CHARS = 28
+
+# Baseline scheduling control (faster fallback)
+BASELINE_USE_SCHEDULER = False
 
 # ============================================================================
 # Helper Functions
@@ -139,8 +151,30 @@ def load_benchmarks() -> Dict[str, Dict[int, QuantumCircuit]]:
     return benchmarks
 
 
-def create_noise_model(p1: float = 0.001, p2: float = 0.01) -> NoiseModel:
-    """Create a depolarizing noise model as specified in the paper."""
+def create_noise_model(p1: float = 0.001, p2: float = 0.01,
+                       qpu: str = None, two_q_mode: str = None) -> NoiseModel:
+    """Create a depolarizing noise model using IBM QPU error presets."""
+    qpu_presets = {
+        "ibm_marrakesh": {
+            "p2_median": 2.67e-3,
+            "p2_layered": 5.57e-3,
+            "readout": 1.172e-2,
+        },
+        "ibm_torino": {
+            "p2_median": 2.59e-3,
+            "p2_layered": 7.91e-3,
+            "readout": 3.113e-2,
+        },
+    }
+    qpu = qpu or NOISE_QPU
+    two_q_mode = two_q_mode or NOISE_2Q_MODE
+    preset = qpu_presets.get(qpu)
+    if preset:
+        if two_q_mode == "median":
+            p2 = preset["p2_median"]
+        else:
+            p2 = preset["p2_layered"]
+        p1 = p2 * NOISE_1Q_FRACTION
     noise = NoiseModel()
     err1 = depolarizing_error(p1, 1)
     err2 = depolarizing_error(p2, 2)
@@ -150,6 +184,10 @@ def create_noise_model(p1: float = 0.001, p2: float = 0.01) -> NoiseModel:
 
     noise.add_all_qubit_quantum_error(err1, one_q_gates)
     noise.add_all_qubit_quantum_error(err2, two_q_gates)
+    if preset:
+        r = preset["readout"]
+        ro = ReadoutError([[1 - r, r], [r, 1 - r]])
+        noise.add_all_qubit_readout_error(ro)
 
     return noise
 
@@ -203,11 +241,7 @@ class MultiprogrammingSimulator:
     def run_ideal(self, circuit: QuantumCircuit) -> Dict[str, int]:
         """Run circuit without noise to get ideal distribution."""
         ideal_sim = AerSimulator(method='statevector')
-        if circuit.num_clbits == 0:
-            circ = circuit.copy()
-            circ.measure_all()
-        else:
-            circ = circuit
+        circ = self._ensure_measured_circuit(circuit)
 
         try:
             job = ideal_sim.run(circ, shots=SHOTS)
@@ -219,6 +253,7 @@ class MultiprogrammingSimulator:
     def run_noisy(self, circuit: QuantumCircuit,
                   initial_layout: List[int] = None) -> Dict[str, int]:
         """Run circuit with noise model."""
+        circuit = self._ensure_measured_circuit(circuit)
         try:
             tc = transpile(circuit, self.backend,
                           initial_layout=initial_layout,
@@ -243,6 +278,16 @@ class MultiprogrammingSimulator:
         noisy_counts = self.run_noisy(circuit, initial_layout=initial_layout)
         fidelity = self.compute_fidelity(noisy_counts, ideal_counts)
         return fidelity, noisy_counts
+
+    def _ensure_measured_circuit(self, circuit: QuantumCircuit) -> QuantumCircuit:
+        """Ensure circuit has measurements for all qubits."""
+        if circuit.num_clbits >= circuit.num_qubits:
+            return circuit
+        qc = QuantumCircuit(circuit.num_qubits, circuit.num_qubits)
+        qc.compose(circuit, qubits=range(circuit.num_qubits),
+                   clbits=range(circuit.num_clbits), inplace=True)
+        qc.measure(range(circuit.num_qubits), range(circuit.num_qubits))
+        return qc
 
     def _find_good_layout(self, circuit: QuantumCircuit) -> List[int]:
         """Find a good layout for a circuit based on backend connectivity."""
@@ -347,36 +392,49 @@ class MultiprogrammingSimulator:
         Returns: (fidelity1, fidelity2, effective_utilization)
         """
         sched1, sched2 = circ1, circ2
-        try:
-            programs = [circ1, circ2]
-            program_analysis = baseline_mp.analyze_programs(programs)
+        if BASELINE_USE_SCHEDULER:
             try:
-                utility = baseline_mp.compute_qubit_utility(self.backend)
-            except Exception:
-                coupling_map = list(self.backend.coupling_map)
-                utility = {}
-                for qubit in range(self.n_qubits):
-                    neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
-                                [pair[0] for pair in coupling_map if pair[1] == qubit]
-                    num_links = len(neighbors)
-                    error_sum = max(num_links * 0.01, 0.01)
-                    utility[qubit] = num_links / error_sum if error_sum > 0 else 0
+                programs = [circ1, circ2]
+                program_analysis = baseline_mp.analyze_programs(programs)
+                try:
+                    utility = baseline_mp.compute_qubit_utility(self.backend)
+                except Exception:
+                    coupling_map = list(self.backend.coupling_map)
+                    utility = {}
+                    for qubit in range(self.n_qubits):
+                        neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
+                                    [pair[0] for pair in coupling_map if pair[1] == qubit]
+                        num_links = len(neighbors)
+                        error_sum = max(num_links * 0.01, 0.01)
+                        utility[qubit] = num_links / error_sum if error_sum > 0 else 0
 
-            backend_props = {
-                "coupling_map": self.backend.coupling_map,
-                "utility": utility,
-            }
-            scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
-                programs, program_analysis, backend_props
-            )
-            if len(scheduled_programs) == 2:
-                sched1, sched2 = scheduled_programs
-        except Exception as exc:
-            print(f"[WARN] Baseline scheduling failed: {exc}")
+                backend_props = {
+                    "coupling_map": self.backend.coupling_map,
+                    "utility": utility,
+                }
+                scheduled_programs = baseline_mp.shared_qubit_allocation_and_scheduling(
+                    programs, program_analysis, backend_props
+                )
+                if len(scheduled_programs) == 2:
+                    sched1, sched2 = scheduled_programs
+            except Exception as exc:
+                print(f"[WARN] Baseline scheduling failed: {exc}")
 
-        n1, n2 = sched1.num_qubits, sched2.num_qubits
-        layout1 = list(range(n1))
-        layout2 = list(range(n1, n1 + n2))
+        sched1_m = self._ensure_measured_circuit(sched1)
+        sched2_m = self._ensure_measured_circuit(sched2)
+        n1, n2 = sched1_m.num_qubits, sched2_m.num_qubits
+        layout1 = getattr(sched1, "_baseline_layout", None)
+        layout2 = getattr(sched2, "_baseline_layout", None)
+        if (isinstance(layout1, list) and isinstance(layout2, list)
+                and len(layout1) == n1 and len(layout2) == n2
+                and not (set(layout1) & set(layout2))):
+            layout = layout1 + layout2
+        else:
+            if layout1 is not None or layout2 is not None:
+                print("[WARN] Baseline layout invalid or overlapping; using consecutive layout.")
+            layout1 = list(range(n1))
+            layout2 = list(range(n1, n1 + n2))
+            layout = list(range(n1 + n2))
 
         if n1 + n2 > self.n_qubits:
             f1, _ = self.run_solo(circ1)
@@ -385,10 +443,8 @@ class MultiprogrammingSimulator:
 
         # Create combined circuit with consecutive layout
         combined = QuantumCircuit(n1 + n2, n1 + n2)
-        combined.compose(sched1, qubits=range(n1), clbits=range(n1), inplace=True)
-        combined.compose(sched2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
-
-        layout = list(range(n1 + n2))
+        combined.compose(sched1_m, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(sched2_m, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
 
         ideal1 = self.run_ideal(circ1)
         ideal2 = self.run_ideal(circ2)
@@ -412,7 +468,9 @@ class MultiprogrammingSimulator:
         QOS finds optimal non-overlapping layouts for each circuit.
         Returns: (fidelity1, fidelity2, effective_utilization)
         """
-        n1, n2 = circ1.num_qubits, circ2.num_qubits
+        circ1_m = self._ensure_measured_circuit(circ1)
+        circ2_m = self._ensure_measured_circuit(circ2)
+        n1, n2 = circ1_m.num_qubits, circ2_m.num_qubits
 
         if n1 + n2 > self.n_qubits:
             f1, _ = self.run_solo(circ1)
@@ -433,8 +491,8 @@ class MultiprogrammingSimulator:
 
         # Combine circuits with optimal layouts
         combined = QuantumCircuit(n1 + n2, n1 + n2)
-        combined.compose(circ1, qubits=range(n1), clbits=range(n1), inplace=True)
-        combined.compose(circ2, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
+        combined.compose(circ1_m, qubits=range(n1), clbits=range(n1), inplace=True)
+        combined.compose(circ2_m, qubits=range(n1, n1 + n2), clbits=range(n1, n1 + n2), inplace=True)
 
         layout = layout1 + layout2
 
@@ -477,6 +535,8 @@ def generate_circuit_pairs(benchmarks: Dict, target_qubits: int,
 
         for s1 in available_sizes1:
             for s2 in available_sizes2:
+                if name1 == name2 and s1 == s2:
+                    continue
                 if abs((s1 + s2) - target_qubits) <= 2:
                     pairs.append((
                         benchmarks[name1][s1],
@@ -502,6 +562,8 @@ def generate_candidate_pairs(benchmarks: Dict, target_qubits: int,
         for name2, sizes2 in benchmarks.items():
             for s1, circ1 in sizes1.items():
                 for s2, circ2 in sizes2.items():
+                    if name1 == name2 and s1 == s2:
+                        continue
                     if abs((s1 + s2) - target_qubits) > tolerance:
                         continue
 
@@ -845,25 +907,63 @@ def _sample_pairs(pairs: List[Tuple[QuantumCircuit, QuantumCircuit, str, str]],
 def _compute_pair_metrics(sim: MultiprogrammingSimulator,
                           pairs: List[Tuple[QuantumCircuit, QuantumCircuit, str, str]],
                           layout_mode: str,
-                          label: str) -> Tuple[List[float], List[float]]:
+                          label: str,
+                          with_labels: bool = False) -> Tuple[List[float], List[float], List[str]]:
     eff_vals = []
     fid_vals = []
+    labels = []
     total = len(pairs)
     if total == 0:
-        return eff_vals, fid_vals
+        return eff_vals, fid_vals, labels
 
-    for i, (circ1, circ2, _name1, _name2) in enumerate(pairs, start=1):
+    for i, (circ1, circ2, name1, name2) in enumerate(pairs, start=1):
         if layout_mode == "qos":
             f1, f2, eff, _l1, _l2 = sim.run_qos_mp(circ1, circ2)
         else:
             f1, f2, eff, _l1, _l2 = sim.run_baseline_mp(circ1, circ2)
         eff_vals.append(eff)
         fid_vals.append((f1 + f2) / 2)
+        if with_labels:
+            labels.append(f"{name1}+{name2}")
 
         if i % 20 == 0 or i == total:
             print(f"    {label} {i}/{total}", flush=True)
 
-    return eff_vals, fid_vals
+    return eff_vals, fid_vals, labels
+
+
+def _select_top_right(xs: List[float], ys: List[float], labels: List[str],
+                      method: str) -> Tuple[float, float, str]:
+    if not xs or not ys:
+        return None
+    if method == "lexicographic":
+        idx = max(range(len(xs)), key=lambda i: (ys[i], xs[i]))
+        return xs[idx], ys[idx], labels[idx]
+
+    max_x = max(xs) if max(xs) > 0 else 1.0
+    max_y = max(ys) if max(ys) > 0 else 1.0
+    idx = max(
+        range(len(xs)),
+        key=lambda i: ((xs[i] / max_x) + (ys[i] / max_y), ys[i], xs[i]),
+    )
+    return xs[idx], ys[idx], labels[idx]
+
+
+def _top_k_indices(xs: List[float], ys: List[float], k: int, method: str) -> List[int]:
+    if k <= 0 or not xs or not ys:
+        return []
+    if method == "lexicographic":
+        order = sorted(range(len(xs)), key=lambda i: (ys[i], xs[i]), reverse=True)
+        return order[:k]
+
+    max_x = max(xs) if max(xs) > 0 else 1.0
+    max_y = max(ys) if max(ys) > 0 else 1.0
+    order = sorted(
+        range(len(xs)),
+        key=lambda i: ((xs[i] / max_x) + (ys[i] / max_y), ys[i], xs[i]),
+        reverse=True,
+    )
+    return order[:k]
 
 
 def _pareto_frontier(xs: List[float], ys: List[float]) -> Tuple[List[float], List[float]]:
@@ -904,45 +1004,126 @@ def create_pareto_eff_util_scatter():
     if PARETO_MAX_CANDIDATES is not None:
         random.shuffle(candidates)
         candidates = candidates[:PARETO_MAX_CANDIDATES]
-
-    print(f"[Pareto] Evaluating {len(candidates)} candidate pairs...", flush=True)
-    all_eff, all_fid = _compute_pair_metrics(
-        sim, candidates, PARETO_LAYOUT_MODE, "All pairs"
-    )
+        print(f"[Pareto] Candidate cap applied: {len(candidates)}", flush=True)
 
     random_n = PARETO_RANDOM_SAMPLE if PARETO_RANDOM_SAMPLE is not None else N_PAIRS_PER_UTIL
     random_pairs = _sample_pairs(candidates, random_n)
-    print(f"[Pareto] Evaluating {len(random_pairs)} random pairs...", flush=True)
-    rand_eff, rand_fid = _compute_pair_metrics(
-        sim, random_pairs, PARETO_LAYOUT_MODE, "Random pairs"
-    )
 
     qos_n = PARETO_QOS_SAMPLE if PARETO_QOS_SAMPLE is not None else N_PAIRS_PER_UTIL
     qos_pairs = select_qos_pairs(benchmarks, target_qubits, qos_n, sim.backend)
+    print(f"[Pareto] Evaluating {len(candidates)} candidate pairs...", flush=True)
+
+    def plot_layout(ax, title_suffix, all_eff, all_fid, rand_eff, rand_fid, qos_eff, qos_fid, top_right, all_labels):
+        if PARETO_SHOW_ALL and all_eff:
+            ax.scatter(all_eff, all_fid, s=18, alpha=0.25, color='gray', label='All candidate pairs')
+            fx, fy = _pareto_frontier(all_eff, all_fid)
+            if fx and fy:
+                ax.plot(fx, fy, color='black', linewidth=1.2, label='Pareto frontier')
+
+        if rand_eff:
+            ax.scatter(rand_eff, rand_fid, s=30, alpha=0.8, color='steelblue', label='Random pairs')
+        if qos_eff:
+            ax.scatter(qos_eff, qos_fid, s=30, alpha=0.8, color='forestgreen', label='QOS pairs')
+
+        if top_right is not None:
+            tx, ty, tlabel = top_right
+            ax.scatter([tx], [ty], s=140, marker='*', color='gold', edgecolor='black', label='Top-right pair')
+            label_text = tlabel[:PARETO_LABEL_MAX_CHARS]
+            if len(tlabel) > PARETO_LABEL_MAX_CHARS:
+                label_text += "..."
+            ax.annotate(label_text, (tx, ty), textcoords='offset points', xytext=(6, 6), fontsize=8)
+
+        if all_eff and all_labels and PARETO_LABEL_TOPK > 1:
+            idxs = _top_k_indices(all_eff, all_fid, PARETO_LABEL_TOPK, PARETO_TOPRIGHT_METHOD)
+            for idx in idxs:
+                lx, ly = all_eff[idx], all_fid[idx]
+                label_text = all_labels[idx][:PARETO_LABEL_MAX_CHARS]
+                if len(all_labels[idx]) > PARETO_LABEL_MAX_CHARS:
+                    label_text += "..."
+                ax.annotate(label_text, (lx, ly), textcoords='offset points', xytext=(6, -10), fontsize=7)
+
+        ax.set_title(f'Pareto: Eff. Util vs Fidelity ({util}% util, {title_suffix})')
+        ax.set_xlabel('Effective Utilization (%)')
+        ax.grid(alpha=0.3)
+        ax.legend(loc='lower right')
+
+    if PARETO_COMPARE_LAYOUTS:
+        all_eff_b, all_fid_b, all_labels = _compute_pair_metrics(
+            sim, candidates, "baseline", "All pairs (baseline)", with_labels=True
+        )
+        all_eff_q, all_fid_q, _ = _compute_pair_metrics(
+            sim, candidates, "qos", "All pairs (qos)"
+        )
+
+        print(f"[Pareto] Evaluating {len(random_pairs)} random pairs...", flush=True)
+        rand_eff_b, rand_fid_b, _ = _compute_pair_metrics(
+            sim, random_pairs, "baseline", "Random pairs (baseline)"
+        )
+        rand_eff_q, rand_fid_q, _ = _compute_pair_metrics(
+            sim, random_pairs, "qos", "Random pairs (qos)"
+        )
+
+        print(f"[Pareto] Evaluating {len(qos_pairs)} QOS pairs...", flush=True)
+        qos_eff_b, qos_fid_b, _ = _compute_pair_metrics(
+            sim, qos_pairs, "baseline", "QOS pairs (baseline)"
+        )
+        qos_eff_q, qos_fid_q, _ = _compute_pair_metrics(
+            sim, qos_pairs, "qos", "QOS pairs (qos)"
+        )
+
+        top_b = _select_top_right(all_eff_b, all_fid_b, all_labels, PARETO_TOPRIGHT_METHOD)
+        top_q = _select_top_right(all_eff_q, all_fid_q, all_labels, PARETO_TOPRIGHT_METHOD)
+
+        if top_b is not None:
+            print(f"[Pareto] Baseline top-right: {top_b[2]} (eff={top_b[0]:.2f}, fid={top_b[1]:.4f})", flush=True)
+        if top_q is not None:
+            print(f"[Pareto] QOS top-right:      {top_q[2]} (eff={top_q[0]:.2f}, fid={top_q[1]:.4f})", flush=True)
+        if top_b is not None and top_q is not None:
+            same = "YES" if top_b[2] == top_q[2] else "NO"
+            print(f"[Pareto] Same top-right pair? {same}", flush=True)
+
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=True)
+        plot_layout(
+            axes[0], "baseline layout",
+            all_eff_b, all_fid_b, rand_eff_b, rand_fid_b, qos_eff_b, qos_fid_b, top_b, all_labels
+        )
+        plot_layout(
+            axes[1], "QOS layout",
+            all_eff_q, all_fid_q, rand_eff_q, rand_fid_q, qos_eff_q, qos_fid_q, top_q, all_labels
+        )
+        axes[0].set_ylabel('Pair Fidelity')
+
+        output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_eff_util_fidelity_pareto_compare.png')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Pareto scatter saved to: {output_path}")
+        plt.close(fig)
+        return
+
+    all_eff, all_fid, all_labels = _compute_pair_metrics(
+        sim, candidates, PARETO_LAYOUT_MODE, "All pairs", with_labels=True
+    )
+
+    print(f"[Pareto] Evaluating {len(random_pairs)} random pairs...", flush=True)
+    rand_eff, rand_fid, _ = _compute_pair_metrics(
+        sim, random_pairs, PARETO_LAYOUT_MODE, "Random pairs"
+    )
+
     print(f"[Pareto] Evaluating {len(qos_pairs)} QOS pairs...", flush=True)
-    qos_eff, qos_fid = _compute_pair_metrics(
+    qos_eff, qos_fid, _ = _compute_pair_metrics(
         sim, qos_pairs, PARETO_LAYOUT_MODE, "QOS pairs"
     )
 
+    top_right = _select_top_right(all_eff, all_fid, all_labels, PARETO_TOPRIGHT_METHOD)
+    if top_right is not None:
+        print(f"[Pareto] Top-right: {top_right[2]} (eff={top_right[0]:.2f}, fid={top_right[1]:.4f})", flush=True)
+
     fig, ax = plt.subplots(figsize=(6.5, 4.5))
-
-    if PARETO_SHOW_ALL and all_eff:
-        ax.scatter(all_eff, all_fid, s=18, alpha=0.25, color='gray', label='All candidate pairs')
-        fx, fy = _pareto_frontier(all_eff, all_fid)
-        if fx and fy:
-            ax.plot(fx, fy, color='black', linewidth=1.2, label='Pareto frontier')
-
-    if rand_eff:
-        ax.scatter(rand_eff, rand_fid, s=30, alpha=0.8, color='steelblue', label='Random pairs')
-    if qos_eff:
-        ax.scatter(qos_eff, qos_fid, s=30, alpha=0.8, color='forestgreen', label='QOS pairs')
-
     layout_label = "baseline layout" if PARETO_LAYOUT_MODE == "baseline" else "QOS layout"
-    ax.set_title(f'Pareto: Eff. Util vs Fidelity ({util}% util, {layout_label})')
-    ax.set_xlabel('Effective Utilization (%)')
+    plot_layout(
+        ax, layout_label, all_eff, all_fid, rand_eff, rand_fid, qos_eff, qos_fid, top_right, all_labels
+    )
     ax.set_ylabel('Pair Fidelity')
-    ax.grid(alpha=0.3)
-    ax.legend(loc='lower right')
 
     output_path = os.path.join(PROJECT_ROOT, 'test', 'figure_11_eff_util_fidelity_pareto.png')
     plt.tight_layout()
