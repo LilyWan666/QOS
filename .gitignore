@@ -16,3 +16,4 @@ Thumbs.db
 *.log
 evaluation/openevolve_pairing/pairing_metadata/
 evaluation/openevolve_pairing/*pairing_compare_*.png
+evaluation/openevolve_pairing/test_corr*.txt
