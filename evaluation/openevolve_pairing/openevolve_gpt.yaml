@@ -1,0 +1,136 @@
+max_iterations: 100
+checkpoint_interval: 20
+log_level: "INFO"
+log_dir: null
+random_seed: 42
+max_tasks_per_child: 1
+
+# Rewrite mode: output full file each iteration (stable with OE markers)
+diff_based_evolution: false
+max_code_length: 30000
+
+early_stopping_patience: null
+convergence_threshold: 0.001
+early_stopping_metric: "score"
+
+llm:
+  api_base: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  # available models: gpt-5.2, gpt-5.1, gpt-5, gpt-5-nano
+  primary_model: "gpt-5-mini"
+  temperature: 0.7
+  top_p: 0.9
+  max_tokens: 4096
+  timeout: 450
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are optimizing ONLY the function get_matching_score(self, q1, q2, backend, weighted=False, weights=[])
+    in evaluation/openevolve_pairing/target.py.
+
+    OUTPUT FORMAT (CRITICAL):
+    - Return the full file contents of evaluation/openevolve_pairing/target.py.
+    - Output code only: no explanations, no markdown fences, no extra text.
+
+    FUNCTION CONTRACT (MUST FOLLOW EXACTLY):
+    - Do NOT change the function signature.
+      It MUST remain: get_matching_score(self, q1, q2, backend, weighted=False, weights=[])
+    - It MUST return a single float score (higher is better).
+    - Keep it deterministic (no randomness or external state).
+    - Do not add imports or change module-level structure.
+
+    QPU CONTEXT:
+    - backend is the target QPU (e.g., qubit capacity and topology).
+    - effective_utilization already incorporates backend constraints (e.g., num_qubits).
+    - You should treat backend as fixed input; do not use external state or randomness.
+
+    GENERALIZATION REQUIREMENT (CRITICAL):
+    - The evaluator samples diverse circuit families and sizes.
+    - Your logic must generalize across benchmarks and sizes.
+    - Do NOT branch on circuit names or hard-coded per-benchmark constants.
+
+  user_message: |
+    CONTEXT:
+    The goal is to evolve a replacement scoring function for
+    qos/multiprogrammer/multiprogrammer.py:get_matching_score.
+    The evaluator builds a candidate set of circuit pairs and ranks them by your score.
+    It then simulates all candidate pairs to get (effective_utilization, fidelity).
+    The evaluator selects top-K pairs by your score, then computes a bin-averaged
+    fidelity metric over those K pairs:
+      - It builds utilization bins with width 0.025 based on the min/max utilization
+        among the Top-K pairs.
+      - For each non-empty bin, it computes the mean fidelity.
+      - The final score is the average of those per-bin means (empty bins are skipped).
+    The evaluator returns:
+    score = avg_bin_fidelity (maximize).
+    Note: weighted is always False in evaluation; weights are not used.
+
+    AVAILABLE SIGNALS:
+      - self.effective_utilization(q1, q2, backend)
+      - self.entanglementComparison(q1, q2)
+      - self.measurementComparison(q1, q2)
+      - self.parallelismComparison(q1, q2)
+      - self.depthComparison(q1, q2)
+      - q1.get_metadata(), q2.get_metadata()
+    NOTE:
+      - effective_utilization returns a 0-100 value; normalize if mixing with 0-1 metrics.
+
+    Metadata keys may include:
+      depth, num_qubits, num_clbits, num_nonlocal_gates, num_connected_components,
+      number_instructions, num_measurements, num_cnot_gates,
+      program_communication, liveness, parallelism, measurement,
+      entanglement_ratio, critical_depth
+
+    GOAL:
+    - Maximize avg_bin_fidelity across utilization bins (0.025 width) within the Top-K pairs.
+
+  evaluator_system_message: "You are a strict code reviewer. Do not add commentary."
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+
+  # Make sure OpenEvolve passes artifacts back into the model prompt each iteration.
+  include_artifacts: true
+  max_artifact_bytes: 65536
+  artifact_security_filter: true
+
+database:
+  db_path: null
+  in_memory: true
+  log_prompts: true
+
+  population_size: 100
+  archive_size: 20
+  num_islands: 5
+
+  migration_interval: 30
+  migration_rate: 0.12
+
+  elite_selection_ratio: 0.05
+  exploration_ratio: 0.65
+  exploitation_ratio: 0.30
+
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 12
+  diversity_reference_size: 30
+
+evaluator:
+  timeout: 4800
+  max_retries: 1
+  cascade_evaluation: false
+  parallel_evaluations: 1
+  use_llm_feedback: false
+  llm_feedback_weight: 0.0
+
+evolution_trace:
+  enabled: false
+  format: "jsonl"
+  include_code: false
+  include_prompts: false
+  output_path: null
+  buffer_size: 10
+  compress: false

@@ -80,10 +80,10 @@ BENCHMARK_MAPPING = {
 # Utilization level -> total qubits on 27-qubit QPU
 # Using smaller sizes for faster testing (paper uses {30: 8, 60: 16, 88: 24})
 # UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
-UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
+UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
 # No-M/P (Fig.11a) should match paper utilization mapping.
 # NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
-NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16}
+NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
 
 # Simulation parameters
 SHOTS = 1000
@@ -1310,7 +1310,7 @@ def create_depth_cdf(results: Dict[str, Any]):
 
 
 def create_depth_fidelity_scatter(results: Dict[str, Any]):
-    """Box plots of pair fidelity to highlight mean and range."""
+    """Mean +/- std plots of pair fidelity."""
     utils = sorted(UTIL_TO_QUBITS.keys())
 
     def render_plot(kind: str):
@@ -1352,21 +1352,23 @@ def create_depth_fidelity_scatter(results: Dict[str, Any]):
                     colors.append('darkseagreen')
 
             if data:
-                box = ax.boxplot(
-                    data,
-                    labels=labels,
-                    showmeans=True,
-                    whis=(0, 100),
-                    patch_artist=True,
-                    meanprops=dict(marker='D', markerfacecolor='black', markeredgecolor='black', markersize=4),
-                    medianprops=dict(color='black'),
-                    boxprops=dict(linewidth=1.0),
-                    whiskerprops=dict(linewidth=1.0),
-                    capprops=dict(linewidth=1.0),
-                )
-                for patch, color in zip(box['boxes'], colors):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.6)
+                x = np.arange(len(data))
+                for idx, (vals, label, color) in enumerate(zip(data, labels, colors)):
+                    mean_val = float(np.mean(vals))
+                    std_val = float(np.std(vals))
+                    ax.errorbar(
+                        idx,
+                        mean_val,
+                        yerr=std_val,
+                        fmt='o',
+                        color=color,
+                        ecolor=color,
+                        elinewidth=1.2,
+                        capsize=4,
+                        markersize=5,
+                        label=label,
+                    )
+                ax.set_xticks(x, labels)
                 any_data = True
 
             ax.set_title(f'Utilization {util}%')
@@ -1389,7 +1391,7 @@ def create_depth_fidelity_scatter(results: Dict[str, Any]):
 
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"Depth/Fidelity box plot saved to: {output_path}")
+        print(f"Depth/Fidelity mean-std plot saved to: {output_path}")
         plt.close(fig)
         return output_path
 
