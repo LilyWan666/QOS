@@ -14,7 +14,7 @@ SLA_MIN_FID = 0.0
 # Simulation
 LAYOUT_MODE = "qos"  # "qos" or "baseline"
 BASELINE_USE_SCHEDULER = False
-SHOTS = 1000
+SHOTS = 8196
 RANDOM_SEED = 42
 
 # Evolution

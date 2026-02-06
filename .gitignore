@@ -17,3 +17,21 @@ Thumbs.db
 evaluation/openevolve_pairing/pairing_metadata/
 evaluation/openevolve_pairing/*pairing_compare_*.png
 evaluation/openevolve_pairing/test_corr*.txt
+
+# ---- Python bytecode / cache ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# If you also have these:
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- openevolve outputs / logs ----
+evaluation/openevolve_pairing/openevolve_output/
+evaluation/openevolve_pairing/logs/
+evaluation/openevolve_pairing/*.log
+evaluation/openevolve_pairing/$OUT_CFG
