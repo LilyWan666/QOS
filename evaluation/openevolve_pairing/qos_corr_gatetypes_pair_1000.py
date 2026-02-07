@@ -79,7 +79,7 @@ for k, vals in metrics.items():
 
 results.sort(key=lambda x: abs(x[1]), reverse=True)
 
-print(f"[GateType Pair Sweep] N={len(fids)} pairs, shots={config.SHOTS}, candidate_limit={config.CANDIDATE_LIMIT}")
+print(f"[GateType Pair Sweep] N={len(fids)} pairs, shots={config.SHOTS}")
 print("metric\tcorr")
 for k, c in results:
     print(f"{k}\t{c:.4f}")

@@ -16,7 +16,7 @@ from evaluation.openevolve_pairing import evaluator
 import config
 
 # Full sweep settings
-config.CANDIDATE_LIMIT = 120
+config.CANDIDATE_LIMIT = None
 config.SHOTS = 1000
 
 _e = evaluator
@@ -60,7 +60,7 @@ for k in sorted(all_keys):
 
 results.sort(key=lambda x: abs(x[1]), reverse=True)
 
-print(f"[Sweep] N={len(fids)} pairs, shots={config.SHOTS}, candidate_limit={config.CANDIDATE_LIMIT}")
+print(f"[Sweep] N={len(fids)} pairs, shots={config.SHOTS}")
 print("metric\tcorr")
 for k, c in results:
     print(f"{k}\t{c:.4f}")

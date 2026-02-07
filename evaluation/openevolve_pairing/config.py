@@ -5,7 +5,8 @@
 TARGET_UTIL = 60
 # TARGET_UTIL = 88
 TOP_K = 24
-CANDIDATE_LIMIT = 120
+# Always evaluate on the full candidate pool.
+CANDIDATE_LIMIT = None
 
 # SLA thresholds (normalized)
 SLA_MIN_UTIL = 0.0

@@ -75,7 +75,8 @@ VLLM_PID=$!
 
 python3 -u "$WAIT_SCRIPT" --vllm_host 127.0.0.1 --vllm_port 8000
 
-openevolve-run -c "$OUT_CFG" -o "$OUT_DIR" "$TARGET_PY" "$EVAL_PY"
+python -u /work/nvme/betu/lily/QOS/evaluation/openevolve_pairing/run_openevolve_dedup.py \
+  -c "$OUT_CFG" -o "$OUT_DIR" "$TARGET_PY" "$EVAL_PY"
 
 kill "$VLLM_PID"
 wait "$VLLM_PID" || true

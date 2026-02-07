@@ -72,20 +72,14 @@ def _pair_derived(m1, m2):
     return derived
 
 
-def _init_worker(util, shots, candidate_limit):
+def _init_worker(util, shots):
     # Each worker has its own evaluator state.
     config.TARGET_UTIL = util
     config.SHOTS = shots
-    if candidate_limit is not None and candidate_limit >= 0:
-        config.CANDIDATE_LIMIT = candidate_limit
-    else:
-        config.CANDIDATE_LIMIT = None
+    config.CANDIDATE_LIMIT = None
     evaluator.config.TARGET_UTIL = util
     evaluator.config.SHOTS = shots
-    if candidate_limit is not None and candidate_limit >= 0:
-        evaluator.config.CANDIDATE_LIMIT = candidate_limit
-    else:
-        evaluator.config.CANDIDATE_LIMIT = None
+    evaluator.config.CANDIDATE_LIMIT = None
     _reset_evaluator()
     evaluator._init()
 
@@ -115,8 +109,6 @@ def main():
     parser.add_argument("--util", type=int, default=30, choices=[30, 45, 60, 88],
                         help="TARGET_UTIL (percent)")
     parser.add_argument("--shots", type=int, default=config.SHOTS, help="Simulation shots")
-    parser.add_argument("--candidate-limit", type=int, default=-1,
-                        help="Max candidates to simulate; -1 means no limit")
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of worker processes (0 uses SLURM_CPUS_PER_TASK)")
     parser.add_argument("--flush-every", type=int, default=10,
@@ -132,16 +124,10 @@ def main():
     # Ensure both the package config and evaluator's local config module are updated.
     config.TARGET_UTIL = args.util
     config.SHOTS = args.shots
-    if args.candidate_limit >= 0:
-        config.CANDIDATE_LIMIT = args.candidate_limit
-    else:
-        config.CANDIDATE_LIMIT = None
+    config.CANDIDATE_LIMIT = None
     evaluator.config.TARGET_UTIL = args.util
     evaluator.config.SHOTS = args.shots
-    if args.candidate_limit >= 0:
-        evaluator.config.CANDIDATE_LIMIT = args.candidate_limit
-    else:
-        evaluator.config.CANDIDATE_LIMIT = None
+    evaluator.config.CANDIDATE_LIMIT = None
 
     _reset_evaluator()
     evaluator._init()
@@ -250,7 +236,7 @@ def main():
                     print(f"  progress {done}/{len(todo_indices)}", flush=True)
     else:
         with Pool(processes=workers, initializer=_init_worker,
-                  initargs=(args.util, args.shots, args.candidate_limit)) as pool:
+                  initargs=(args.util, args.shots)) as pool:
             iterator = pool.imap_unordered(_compute_row, todo_indices, chunksize=1)
             if _HAS_TQDM:
                 iterator = tqdm(iterator, total=len(todo_indices), desc="Simulating pairs")

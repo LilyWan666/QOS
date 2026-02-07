@@ -67,14 +67,12 @@ def main():
     parser.add_argument("--old", required=True, help="Path to original target.py")
     parser.add_argument("--out", default="pairing_compare.png", help="Output figure path")
     parser.add_argument("--top-k", type=int, default=config.TOP_K)
-    parser.add_argument("--candidate-limit", type=int, default=config.CANDIDATE_LIMIT or 0)
     parser.add_argument("--use-pareto-rank", action="store_true", help="Compute Pareto ranks (slower)")
     parser.add_argument("--fast", action="store_true", help="Only simulate Top-K pairs")
     parser.add_argument("--seed", type=int, default=config.RANDOM_SEED, help="Random seed for reproducibility")
     args = parser.parse_args()
 
-    if args.candidate_limit:
-        config.CANDIDATE_LIMIT = args.candidate_limit
+    config.CANDIDATE_LIMIT = None
     config.TOP_K = args.top_k
     random.seed(args.seed)
     np.random.seed(args.seed)

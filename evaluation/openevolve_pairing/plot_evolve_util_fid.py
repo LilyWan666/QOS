@@ -52,7 +52,6 @@ def main():
     parser.add_argument("--util", type=int, default=60, choices=[30, 45, 60, 88])
     parser.add_argument("--shots", type=int, default=1000)
     parser.add_argument("--top-k", type=int, default=24)
-    parser.add_argument("--candidate-limit", type=int, default=120)
     parser.add_argument("--target", default=None, help="Path to evolved target.py (default: openevolve_pairing/target.py)")
     parser.add_argument("--out", default=None, help="Output PNG path")
     parser.add_argument("--out-csv", default=None, help="Output CSV path")
@@ -63,7 +62,7 @@ def main():
     config.TARGET_UTIL = args.util
     config.SHOTS = args.shots
     config.TOP_K = args.top_k
-    config.CANDIDATE_LIMIT = args.candidate_limit
+    config.CANDIDATE_LIMIT = None
     config.EVAL_MODE = "candidate"
 
     _reset_evaluator()

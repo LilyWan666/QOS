@@ -175,8 +175,6 @@ def _init():
     _BENCHMARKS = repro.load_benchmarks()
     _CANDIDATES = repro.generate_candidate_pairs(_BENCHMARKS, target_qubits)
     random.shuffle(_CANDIDATES)
-    if config.CANDIDATE_LIMIT is not None:
-        _CANDIDATES = _CANDIDATES[:config.CANDIDATE_LIMIT]
 
     _SIM = repro.MultiprogrammingSimulator()
     _MP = Multiprogrammer()

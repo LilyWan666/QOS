@@ -1,4 +1,4 @@
-max_iterations: 500
+max_iterations: 1000
 checkpoint_interval: 10
 log_level: "INFO"
 log_dir: null
