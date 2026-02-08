@@ -198,6 +198,106 @@ def _ensure_pair_ranks():
     _PAIR_RANKS = _nondominated_ranks(points)
 
 
+def _pearson_corr(xs: List[float], ys: List[float]) -> float:
+    if len(xs) != len(ys):
+        raise ValueError("Correlation inputs must have the same length.")
+    if len(xs) < 2:
+        return 0.0
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    if int(np.sum(mask)) < 2:
+        return 0.0
+    x = x[mask]
+    y = y[mask]
+    x_mean = float(np.mean(x))
+    y_mean = float(np.mean(y))
+    xd = x - x_mean
+    yd = y - y_mean
+    denom = float(np.sqrt(np.sum(xd * xd) * np.sum(yd * yd)))
+    if denom <= 1e-15:
+        return 0.0
+    val = float(np.sum(xd * yd) / denom)
+    if not np.isfinite(val):
+        return 0.0
+    return val
+
+
+def _average_ranks(values: List[float]) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    n = len(arr)
+    if n == 0:
+        return np.asarray([], dtype=float)
+    order = np.argsort(arr, kind="mergesort")
+    ranks = np.zeros(n, dtype=float)
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < n and arr[order[j]] == arr[order[i]]:
+            j += 1
+        avg_rank = 0.5 * (i + j - 1) + 1.0
+        ranks[order[i:j]] = avg_rank
+        i = j
+    return ranks
+
+
+def _spearman_corr(xs: List[float], ys: List[float]) -> float:
+    if len(xs) != len(ys):
+        raise ValueError("Correlation inputs must have the same length.")
+    if len(xs) < 2:
+        return 0.0
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    if int(np.sum(mask)) < 2:
+        return 0.0
+    x = x[mask]
+    y = y[mask]
+    rx = _average_ranks(list(x))
+    ry = _average_ranks(list(y))
+    return _pearson_corr(list(rx), list(ry))
+
+
+def _rank_targets(ranks: List[int], target_mode: str) -> List[float]:
+    mode = (target_mode or "inv_rank").strip().lower()
+    if mode == "inv_rank":
+        return [1.0 / max(float(r), 1.0) for r in ranks]
+    if mode == "neg_rank":
+        return [-float(r) for r in ranks]
+    raise ValueError(f"Unsupported CORR_TARGET: {target_mode}")
+
+
+def _score_rank_correlation(scores: List[float], ranks: List[int]) -> float:
+    method = (getattr(config, "CORR_METHOD", "spearman") or "spearman").strip().lower()
+    targets = _rank_targets(ranks, getattr(config, "CORR_TARGET", "inv_rank"))
+    if method == "pearson":
+        return _pearson_corr(scores, targets)
+    if method == "spearman":
+        return _spearman_corr(scores, targets)
+    raise ValueError(f"Unsupported CORR_METHOD: {getattr(config, 'CORR_METHOD', '')}")
+
+
+def _objective_from_stats(avg_rank: float, rank_score_corr: float) -> Tuple[float, float]:
+    mode = (getattr(config, "EVAL_OBJECTIVE", "avg_rank") or "avg_rank").strip().lower()
+    inv_avg_rank = (1.0 / avg_rank) if np.isfinite(avg_rank) and avg_rank > 0.0 else 0.0
+    if mode == "avg_rank":
+        score = -avg_rank if np.isfinite(avg_rank) else -100.0
+        return score, inv_avg_rank
+    if mode == "corr":
+        return float(rank_score_corr), inv_avg_rank
+    if mode == "combined":
+        w_corr = max(float(getattr(config, "CORR_WEIGHT", 0.7)), 0.0)
+        w_rank = max(float(getattr(config, "AVG_RANK_WEIGHT", 0.3)), 0.0)
+        total = w_corr + w_rank
+        if total <= 1e-15:
+            w_corr = 0.7
+            w_rank = 0.3
+            total = 1.0
+        score = (w_corr / total) * float(rank_score_corr) + (w_rank / total) * float(inv_avg_rank)
+        return score, inv_avg_rank
+    raise ValueError(f"Unsupported EVAL_OBJECTIVE: {getattr(config, 'EVAL_OBJECTIVE', '')}")
+
+
 def _init():
     global _INIT_DONE, _BENCHMARKS, _CANDIDATES, _FEATURES, _SIM, _QERNEL_PAIRS, _MP
     if _INIT_DONE:
@@ -414,7 +514,8 @@ def evaluate(path):
     top_idx = np.argsort(scores)[-config.TOP_K:]
     top_ranks = [_PAIR_RANKS[i] for i in top_idx]
     avg_rank = float(np.mean(top_ranks)) if top_ranks else float("inf")
-    score = -avg_rank if avg_rank != float("inf") else -100.0
+    rank_score_corr = _score_rank_correlation(scores, _PAIR_RANKS)
+    score, inv_avg_rank = _objective_from_stats(avg_rank, rank_score_corr)
 
     def _fmt4(val: float) -> str:
         return f"{val:.4f}".rstrip("0").rstrip(".")
@@ -445,8 +546,11 @@ def evaluate(path):
         base_idx = np.argsort(base_scores)[-config.TOP_K:]
         base_ranks = [_PAIR_RANKS[i] for i in base_idx]
         base_avg_rank = float(np.mean(base_ranks)) if base_ranks else float("inf")
+        base_corr = _score_rank_correlation(base_scores, _PAIR_RANKS)
+        base_obj, _base_inv = _objective_from_stats(base_avg_rank, base_corr)
         print(
-            f"[Evaluator] baseline avg-rank: {base_avg_rank:.4f}",
+            f"[Evaluator] objective={config.EVAL_OBJECTIVE} baseline avg-rank={base_avg_rank:.4f} "
+            f"corr={base_corr:.4f} score={base_obj:.4f}",
             flush=True,
         )
 
@@ -482,11 +586,31 @@ def evaluate(path):
             top_rank_pairs_lines.append(",".join(values))
     top_rank_pairs_csv = "\n".join(top_rank_pairs_lines)
 
+    objective_summary_csv = "\n".join([
+        "objective,corr_method,corr_target,top_k,avg_rank,inv_avg_rank,rank_score_corr,score",
+        f"{config.EVAL_OBJECTIVE},{config.CORR_METHOD},{config.CORR_TARGET},{int(config.TOP_K)},"
+        f"{_fmt4(avg_rank if np.isfinite(avg_rank) else float('nan'))},"
+        f"{_fmt4(inv_avg_rank)},{_fmt4(rank_score_corr)},{_fmt4(score)}",
+    ])
+
+    print(
+        f"[Evaluator] objective={config.EVAL_OBJECTIVE} avg-rank={avg_rank:.4f} "
+        f"corr={rank_score_corr:.4f} score={score:.4f}",
+        flush=True,
+    )
+
     return _build_evaluation_result({
-        "metrics": {"score": score, "combined_score": score},
+        "metrics": {
+            "score": score,
+            "combined_score": score,
+            "avg_rank": avg_rank,
+            "inv_avg_rank": inv_avg_rank,
+            "rank_score_corr": rank_score_corr,
+        },
         "artifacts": {
             "rank_distribution_csv": rank_distribution_csv,
             "top_pairs_metrics_csv": top_pairs_csv,
             "top_rank_pairs_all_columns_csv": top_rank_pairs_csv,
+            "objective_summary_csv": objective_summary_csv,
         },
     })

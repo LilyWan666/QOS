@@ -35,3 +35,7 @@ evaluation/openevolve_pairing/openevolve_output/
 evaluation/openevolve_pairing/logs/
 evaluation/openevolve_pairing/*.log
 evaluation/openevolve_pairing/$OUT_CFG
+evaluation/openevolve_pairing/run_vllm_openevolve_qwen3_14b_awq.slurm
+temp/qos_seed_vs_target/
+ibm_quantum/
+temp/=*

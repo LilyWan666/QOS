@@ -59,9 +59,10 @@ prompt:
     * measurement: measurement ratio/feature metric.
     * entanglement_ratio: entangling-gate ratio.
     * critical_depth: critical path depth estimate.
-    CONTEXT: The goal is to evolve a replacement scoring function for qos/multiprogrammer/multiprogrammer.py:get_matching_score. The evaluator builds a candidate set of circuit pairs and ranks them by your score. It simulates all candidate pairs to get (effective_utilization, fidelity) and computes Pareto ranks over those two objectives (higher is better). The evaluator selects Top-K pairs by your score, then computes:
-    * avg_rank = mean Pareto rank of the Top-K pairs
-    * score = 1 / avg_rank
+    CONTEXT: The goal is to evolve a replacement scoring function for qos/multiprogrammer/multiprogrammer.py:get_matching_score. The evaluator builds a candidate set of circuit pairs and ranks them by your score. It simulates all candidate pairs to get (effective_utilization, fidelity) and computes Pareto ranks over those two objectives (higher is better). The evaluator objective is controlled externally by environment variables:
+    * OE_EVAL_OBJECTIVE=avg_rank: maximize score = -avg_rank(Top-K)
+    * OE_EVAL_OBJECTIVE=corr: maximize correlation(score_fn, Pareto-score)
+    * OE_EVAL_OBJECTIVE=combined: maximize weighted mix of corr and 1/avg_rank
     Note: weighted is always False in evaluation; weights are not used.
     RANKING STEPS (EVALUATOR LOGIC):
     1) Build candidate circuit pairs.
@@ -69,7 +70,7 @@ prompt:
     3) Compute Pareto ranks over those two objectives (higher is better).
     4) Select Top-K pairs by your score.
     5) Compute avg_rank = mean Pareto rank of the Top-K.
-    6) Final score is derived from avg_rank (lower avg_rank is better).
+    6) Final score depends on OE_EVAL_OBJECTIVE (avg_rank / corr / combined).
     AVAILABLE SIGNALS:
     * self.effective_utilization(q1, q2, backend)
     * self.entanglementComparison(q1, q2)
@@ -80,7 +81,7 @@ prompt:
     * effective_utilization returns a 0-100 value; normalize if mixing with 0-1 metrics.
     Metadata keys may include: depth, num_qubits, num_clbits, num_nonlocal_gates, num_connected_components, number_instructions, num_measurements, num_cnot_gates, program_communication, liveness, parallelism, measurement, entanglement_ratio, critical_depth
     GOAL:
-    * Maximize 1 / avg_rank for the Top-K pairs (i.e., minimize average Pareto rank).
+    * Maximize the evaluator's current objective score (as configured externally).
 
     ARTIFACTS:
     - rank_distribution_csv: Per-rank (order) counts for all pairs and for the Top-K
