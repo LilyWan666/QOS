@@ -1,3 +1,0 @@
-method,selected_count,top_k,selection_scope,avg_rank,objective_score
-orig,24,24,csv_subset,8.958333333333334,-8.958333333333334
-new,24,24,csv_subset,7.375,-7.375
