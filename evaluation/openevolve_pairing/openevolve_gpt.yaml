@@ -18,7 +18,7 @@ llm:
   api_key: "${OPENAI_API_KEY}"
   # available models: gpt-5.2, gpt-5.1, gpt-5, gpt-5-nano, Qwen2.5-14B-Instruct
   primary_model: "Qwen2.5-14B-Instruct"
-  temperature: 0.7
+  temperature: 0.25
   top_p: 0.9
   max_tokens: 4096
   timeout: 450

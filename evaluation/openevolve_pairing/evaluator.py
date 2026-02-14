@@ -5,9 +5,10 @@ import sys
 import random
 import re
 import csv
+import io
 import importlib.util
 import types
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from collections import Counter
 
 import numpy as np
@@ -44,6 +45,23 @@ _PAIR_METADATA_COLUMNS: List[str] = []
 _PAIR_RANKS = None
 _PAIR_PROXY = None
 _SIM = None
+
+
+def _reset_runtime_state():
+    global _INIT_DONE, _BENCHMARKS, _CANDIDATES, _FEATURES, _QERNEL_PAIRS, _MP
+    global _PAIR_METRICS, _PAIR_METADATA, _PAIR_METADATA_COLUMNS, _PAIR_RANKS, _PAIR_PROXY, _SIM
+    _INIT_DONE = False
+    _BENCHMARKS = None
+    _CANDIDATES = None
+    _FEATURES = None
+    _QERNEL_PAIRS = None
+    _MP = None
+    _PAIR_METRICS = {}
+    _PAIR_METADATA = {}
+    _PAIR_METADATA_COLUMNS = []
+    _PAIR_RANKS = None
+    _PAIR_PROXY = None
+    _SIM = None
 
 
 def _strip_code_fences(text: str) -> str:
@@ -315,8 +333,25 @@ def _init():
 
     _SIM = repro.MultiprogrammingSimulator()
     _MP = Multiprogrammer()
-    _FEATURES, _QERNEL_PAIRS = _build_features(_CANDIDATES, _SIM.backend)
     _load_pair_metrics_from_csv()
+    if getattr(config, "EVAL_RESTRICT_TO_CSV", False):
+        before = len(_CANDIDATES)
+        _CANDIDATES = [
+            item for item in _CANDIDATES
+            if f"{item[2]}+{item[3]}" in _PAIR_METRICS
+        ]
+        after = len(_CANDIDATES)
+        if after == 0:
+            raise ValueError(
+                f"No candidates matched CSV keys for util={config.TARGET_UTIL}, shots={config.SHOTS}."
+            )
+        if after != before:
+            print(
+                f"[Evaluator] restricted candidate pool to CSV pairs: {after}/{before} "
+                f"(util={int(config.TARGET_UTIL)} shots={int(config.SHOTS)})",
+                flush=True,
+            )
+    _FEATURES, _QERNEL_PAIRS = _build_features(_CANDIDATES, _SIM.backend)
     _INIT_DONE = True
 
 
@@ -461,6 +496,10 @@ def _get_pair_metrics(idx: int) -> Tuple[float, float]:
     key = f"{name1}+{name2}"
     if key in _PAIR_METRICS:
         return _PAIR_METRICS[key]
+    if getattr(config, "EVAL_RESTRICT_TO_CSV", False):
+        raise KeyError(
+            f"Missing pair metrics in CSV for key={key} (util={config.TARGET_UTIL}, shots={config.SHOTS})"
+        )
     _PAIR_METRICS[key] = (0.0, 0.0)
     return _PAIR_METRICS[key]
 
@@ -487,15 +526,26 @@ def _build_evaluation_result(payload):
     return EvaluationResult(**payload)
 
 
-def evaluate(path):
-    _init()
-    _ensure_pair_ranks()
+def _resolve_effective_top_k(n_items: int) -> Tuple[int, float]:
+    if n_items <= 0:
+        return 0, 0.0
+    ratio_raw = float(getattr(config, "TOP_K_RATIO", 0.0) or 0.0)
+    ratio = ratio_raw
+    # Accept either fraction (0.1) or percentage (10).
+    if ratio > 1.0 and ratio <= 100.0:
+        ratio = ratio / 100.0
+    if ratio > 0.0:
+        k = int(np.ceil(float(n_items) * ratio))
+        k = max(1, min(n_items, k))
+        return k, ratio
+    k = int(getattr(config, "TOP_K", 1) or 1)
+    k = max(1, min(n_items, k))
+    return k, 0.0
 
-    candidate_kind = None
-    candidate_score = None
-    if config.EVAL_MODE in ("candidate", "both"):
-        candidate_kind, candidate_score = _load_score_fn(path)
 
+def _evaluate_active_task(candidate_kind: str | None,
+                          candidate_score: Any,
+                          log_prefix: str = "") -> Dict[str, Any]:
     def score_fn(idx, f):
         if config.EVAL_MODE == "original":
             return _score_baseline(f)
@@ -511,7 +561,8 @@ def evaluate(path):
         except Exception:
             scores.append(-1e9)
 
-    top_idx = np.argsort(scores)[-config.TOP_K:]
+    effective_top_k, effective_top_k_ratio = _resolve_effective_top_k(len(scores))
+    top_idx = np.argsort(scores)[-effective_top_k:]
     top_ranks = [_PAIR_RANKS[i] for i in top_idx]
     avg_rank = float(np.mean(top_ranks)) if top_ranks else float("inf")
     rank_score_corr = _score_rank_correlation(scores, _PAIR_RANKS)
@@ -528,7 +579,6 @@ def evaluate(path):
         except Exception:
             return val
 
-    # Rank (order) distribution: total pairs per rank vs selected Top-K pairs per rank.
     total_counts = Counter(_PAIR_RANKS)
     selected_counts = Counter(_PAIR_RANKS[i] for i in top_idx)
     rank_lines = ["rank,total_pairs,selected_pairs,selected_pct"]
@@ -543,14 +593,17 @@ def evaluate(path):
 
     if config.EVAL_MODE == "both":
         base_scores = [_score_baseline(f) for f in _FEATURES]
-        base_idx = np.argsort(base_scores)[-config.TOP_K:]
+        base_idx = np.argsort(base_scores)[-effective_top_k:]
         base_ranks = [_PAIR_RANKS[i] for i in base_idx]
         base_avg_rank = float(np.mean(base_ranks)) if base_ranks else float("inf")
         base_corr = _score_rank_correlation(base_scores, _PAIR_RANKS)
         base_obj, _base_inv = _objective_from_stats(base_avg_rank, base_corr)
         print(
-            f"[Evaluator] objective={config.EVAL_OBJECTIVE} baseline avg-rank={base_avg_rank:.4f} "
-            f"corr={base_corr:.4f} score={base_obj:.4f}",
+            f"[Evaluator] {log_prefix}objective={config.EVAL_OBJECTIVE} baseline "
+            f"util={int(config.TARGET_UTIL)} shots={int(config.SHOTS)} "
+            f"top-k={int(effective_top_k)}"
+            f"{f' ratio={effective_top_k_ratio:.4f}' if effective_top_k_ratio > 0.0 else ''} "
+            f"avg-rank={base_avg_rank:.4f} corr={base_corr:.4f} score={base_obj:.4f}",
             flush=True,
         )
 
@@ -572,7 +625,7 @@ def evaluate(path):
         ]
         header = kept_cols + ["pareto_rank", "score"]
         top_rank_pairs_lines.append(",".join(header))
-        rank_cutoff = config.TOP_K
+        rank_cutoff = effective_top_k
         for i, rnk in enumerate(_PAIR_RANKS):
             if rnk > rank_cutoff:
                 continue
@@ -587,15 +640,265 @@ def evaluate(path):
     top_rank_pairs_csv = "\n".join(top_rank_pairs_lines)
 
     objective_summary_csv = "\n".join([
-        "objective,corr_method,corr_target,top_k,avg_rank,inv_avg_rank,rank_score_corr,score",
-        f"{config.EVAL_OBJECTIVE},{config.CORR_METHOD},{config.CORR_TARGET},{int(config.TOP_K)},"
+        "objective,corr_method,corr_target,top_k,top_k_ratio,avg_rank,inv_avg_rank,rank_score_corr,score",
+        f"{config.EVAL_OBJECTIVE},{config.CORR_METHOD},{config.CORR_TARGET},{int(effective_top_k)},"
+        f"{effective_top_k_ratio:.6f},"
         f"{_fmt4(avg_rank if np.isfinite(avg_rank) else float('nan'))},"
         f"{_fmt4(inv_avg_rank)},{_fmt4(rank_score_corr)},{_fmt4(score)}",
     ])
 
     print(
-        f"[Evaluator] objective={config.EVAL_OBJECTIVE} avg-rank={avg_rank:.4f} "
-        f"corr={rank_score_corr:.4f} score={score:.4f}",
+        f"[Evaluator] {log_prefix}objective={config.EVAL_OBJECTIVE} "
+        f"util={int(config.TARGET_UTIL)} shots={int(config.SHOTS)} "
+        f"top-k={int(effective_top_k)}"
+        f"{f' ratio={effective_top_k_ratio:.4f}' if effective_top_k_ratio > 0.0 else ''} "
+        f"avg-rank={avg_rank:.4f} corr={rank_score_corr:.4f} score={score:.4f}",
+        flush=True,
+    )
+
+    return {
+        "metrics": {
+            "score": score,
+            "combined_score": score,
+            "avg_rank": avg_rank,
+            "inv_avg_rank": inv_avg_rank,
+            "rank_score_corr": rank_score_corr,
+            "top_k": int(effective_top_k),
+            "top_k_ratio": float(effective_top_k_ratio),
+        },
+        "artifacts": {
+            "rank_distribution_csv": rank_distribution_csv,
+            "top_pairs_metrics_csv": top_pairs_csv,
+            "top_rank_pairs_all_columns_csv": top_rank_pairs_csv,
+            "objective_summary_csv": objective_summary_csv,
+        },
+    }
+
+
+def _baseline_metrics_for_top_k(effective_top_k: int) -> Dict[str, float]:
+    base_scores = [_score_baseline(f) for f in _FEATURES]
+    if not base_scores:
+        return {
+            "score": -100.0,
+            "avg_rank": float("inf"),
+            "inv_avg_rank": 0.0,
+            "rank_score_corr": 0.0,
+            "top_k": 0,
+        }
+    k = int(effective_top_k or 0)
+    k = max(1, min(len(base_scores), k))
+    base_idx = np.argsort(base_scores)[-k:]
+    base_ranks = [_PAIR_RANKS[i] for i in base_idx]
+    base_avg_rank = float(np.mean(base_ranks)) if base_ranks else float("inf")
+    base_corr = _score_rank_correlation(base_scores, _PAIR_RANKS)
+    base_obj, base_inv = _objective_from_stats(base_avg_rank, base_corr)
+    return {
+        "score": float(base_obj),
+        "avg_rank": float(base_avg_rank),
+        "inv_avg_rank": float(base_inv),
+        "rank_score_corr": float(base_corr),
+        "top_k": int(k),
+    }
+
+
+def _resolve_multi_util_agg_mode() -> str:
+    raw = (getattr(config, "MULTI_UTIL_AGG", "mean") or "mean").strip().lower()
+    if raw in ("", "mean", "avg", "average", "raw_mean"):
+        return "mean"
+    if raw in ("norm_to_baseline", "normalized", "normalized_mean", "baseline_norm", "norm"):
+        return "norm_to_baseline"
+    raise ValueError(f"Unsupported MULTI_UTIL_AGG: {raw}")
+
+
+def _merge_artifact_csv_by_util(
+    task_rows: List[Tuple[int, Dict[str, Any]]],
+    artifact_key: str,
+    shots: int,
+) -> str:
+    merged_payloads: List[Tuple[int, List[Dict[str, str]], List[str]]] = []
+    all_headers: List[str] = []
+
+    for util, row in task_rows:
+        blob = str(row.get("artifacts", {}).get(artifact_key, "") or "").strip()
+        if not blob:
+            continue
+        reader = csv.DictReader(blob.splitlines())
+        fieldnames = [str(c) for c in (reader.fieldnames or []) if c]
+        if not fieldnames:
+            continue
+        rows = [{k: (v if v is not None else "") for k, v in r.items()} for r in reader]
+        merged_payloads.append((int(util), rows, fieldnames))
+        for col in fieldnames:
+            if col not in all_headers:
+                all_headers.append(col)
+
+    if not merged_payloads or not all_headers:
+        return ""
+
+    out = io.StringIO(newline="")
+    writer = csv.DictWriter(out, fieldnames=["util", "shots"] + all_headers)
+    writer.writeheader()
+
+    for util, rows, _fieldnames in merged_payloads:
+        for row in rows:
+            out_row = {"util": str(int(util)), "shots": str(int(shots))}
+            for col in all_headers:
+                out_row[col] = row.get(col, "")
+            writer.writerow(out_row)
+
+    return out.getvalue().strip("\r\n")
+
+
+def evaluate(path):
+    candidate_kind = None
+    candidate_score = None
+    if config.EVAL_MODE in ("candidate", "both"):
+        candidate_kind, candidate_score = _load_score_fn(path)
+
+    eval_utils = list(getattr(config, "EVAL_UTILS", [int(config.TARGET_UTIL)]) or [int(config.TARGET_UTIL)])
+    eval_utils = [int(u) for u in eval_utils]
+    eval_shots = int(getattr(config, "EVAL_SHOTS", int(config.SHOTS)))
+    agg_mode = _resolve_multi_util_agg_mode()
+
+    if len(eval_utils) == 1 and eval_utils[0] == int(config.TARGET_UTIL) and eval_shots == int(config.SHOTS):
+        _init()
+        _ensure_pair_ranks()
+        return _build_evaluation_result(_evaluate_active_task(candidate_kind, candidate_score))
+
+    orig_target_util = int(config.TARGET_UTIL)
+    orig_shots = int(config.SHOTS)
+    task_rows: List[Tuple[int, Dict[str, Any]]] = []
+
+    for util in eval_utils:
+        config.TARGET_UTIL = int(util)
+        config.SHOTS = int(eval_shots)
+        _reset_runtime_state()
+        _init()
+        _ensure_pair_ranks()
+        task_row = _evaluate_active_task(candidate_kind, candidate_score, log_prefix=f"[multi {util}] ")
+        if agg_mode == "norm_to_baseline":
+            top_k = int(task_row["metrics"].get("top_k", 0))
+            task_row["baseline_metrics"] = _baseline_metrics_for_top_k(top_k)
+        task_rows.append((util, task_row))
+
+    # Restore caller-visible config.
+    config.TARGET_UTIL = orig_target_util
+    config.SHOTS = orig_shots
+    _reset_runtime_state()
+
+    avg_ranks = [row["metrics"]["avg_rank"] for _util, row in task_rows]
+    corrs = [row["metrics"]["rank_score_corr"] for _util, row in task_rows]
+    raw_avg_rank_mean = float(np.mean(avg_ranks)) if avg_ranks else float("inf")
+    raw_avg_rank_std = float(np.std(avg_ranks)) if len(avg_ranks) > 1 else 0.0
+
+    if agg_mode == "norm_to_baseline":
+        norm_avg_ranks = []
+        for _util, row in task_rows:
+            m = row["metrics"]
+            base = row.get("baseline_metrics", {})
+            cand_avg = float(m.get("avg_rank", float("nan")))
+            base_avg = float(base.get("avg_rank", float("nan")))
+            if np.isfinite(cand_avg) and np.isfinite(base_avg) and base_avg > 0.0:
+                ratio = cand_avg / base_avg
+            else:
+                ratio = float("nan")
+            m["baseline_avg_rank"] = base_avg
+            m["avg_rank_over_baseline"] = ratio
+            norm_avg_ranks.append(ratio)
+        valid_norm = [v for v in norm_avg_ranks if np.isfinite(v)]
+        if valid_norm:
+            avg_rank = float(np.mean(valid_norm))
+            avg_rank_std = float(np.std(valid_norm)) if len(valid_norm) > 1 else 0.0
+        else:
+            avg_rank = raw_avg_rank_mean
+            avg_rank_std = raw_avg_rank_std
+        rank_agg_metric = "mean(avg_rank/baseline_avg_rank)"
+    else:
+        avg_rank = raw_avg_rank_mean
+        avg_rank_std = raw_avg_rank_std
+        rank_agg_metric = "mean(avg_rank)"
+
+    rank_score_corr = float(np.mean(corrs)) if corrs else 0.0
+    score, inv_avg_rank = _objective_from_stats(avg_rank, rank_score_corr)
+    corr_std = float(np.std(corrs)) if len(corrs) > 1 else 0.0
+
+    merged_rank_distribution_csv = _merge_artifact_csv_by_util(
+        task_rows, "rank_distribution_csv", eval_shots
+    )
+    merged_top_pairs_csv = _merge_artifact_csv_by_util(
+        task_rows, "top_pairs_metrics_csv", eval_shots
+    )
+    merged_top_rank_pairs_csv = _merge_artifact_csv_by_util(
+        task_rows, "top_rank_pairs_all_columns_csv", eval_shots
+    )
+    details_lines = [
+        "util,shots,objective,corr_method,corr_target,top_k,top_k_ratio,avg_rank,inv_avg_rank,rank_score_corr,score"
+    ]
+    details_extended_lines = [
+        "util,shots,objective,corr_method,corr_target,top_k,top_k_ratio,avg_rank,inv_avg_rank,rank_score_corr,score,baseline_avg_rank,avg_rank_over_baseline"
+    ]
+    for util, row in task_rows:
+        m = row["metrics"]
+        details_lines.append(
+            f"{int(util)},{int(eval_shots)},{config.EVAL_OBJECTIVE},{config.CORR_METHOD},"
+            f"{config.CORR_TARGET},{int(m.get('top_k', 0))},{float(m.get('top_k_ratio', 0.0)):.6f},"
+            f"{m['avg_rank']:.6f},{m['inv_avg_rank']:.6f},"
+            f"{m['rank_score_corr']:.6f},{m['score']:.6f}"
+        )
+        base_avg_rank = m.get("baseline_avg_rank", float("nan"))
+        rank_over_base = m.get("avg_rank_over_baseline", float("nan"))
+        details_extended_lines.append(
+            f"{int(util)},{int(eval_shots)},{config.EVAL_OBJECTIVE},{config.CORR_METHOD},"
+            f"{config.CORR_TARGET},{int(m.get('top_k', 0))},{float(m.get('top_k_ratio', 0.0)):.6f},"
+            f"{m['avg_rank']:.6f},{m['inv_avg_rank']:.6f},"
+            f"{m['rank_score_corr']:.6f},{m['score']:.6f},"
+            f"{float(base_avg_rank):.6f},{float(rank_over_base):.6f}"
+        )
+    top_k_values = [int(row["metrics"].get("top_k", 0)) for _util, row in task_rows]
+    top_k_ratio_values = [float(row["metrics"].get("top_k_ratio", 0.0)) for _util, row in task_rows]
+    top_k_cell = str(top_k_values[0]) if top_k_values and len(set(top_k_values)) == 1 else "mixed"
+    top_k_ratio_cell = (
+        f"{top_k_ratio_values[0]:.6f}"
+        if top_k_ratio_values and len(set(round(v, 10) for v in top_k_ratio_values)) == 1
+        else "mixed"
+    )
+    objective_summary_csv = "\n".join([
+        "objective,corr_method,corr_target,top_k,top_k_ratio,avg_rank,inv_avg_rank,rank_score_corr,score",
+        f"{config.EVAL_OBJECTIVE},{config.CORR_METHOD},{config.CORR_TARGET},{top_k_cell},{top_k_ratio_cell},"
+        f"{avg_rank:.6f},{inv_avg_rank:.6f},{rank_score_corr:.6f},{score:.6f}",
+    ])
+    objective_agg_summary_csv = "\n".join([
+        "multi_util_agg,rank_agg_metric,avg_rank_used,avg_rank_used_std,avg_rank_raw_mean,avg_rank_raw_std,rank_score_corr_mean,rank_score_corr_std",
+        f"{agg_mode},{rank_agg_metric},{avg_rank:.6f},{avg_rank_std:.6f},{raw_avg_rank_mean:.6f},{raw_avg_rank_std:.6f},{rank_score_corr:.6f},{corr_std:.6f}",
+    ])
+
+    for util, row in task_rows:
+        m = row["metrics"]
+        if agg_mode == "norm_to_baseline":
+            print(
+                f"[Evaluator] [multi-agg] util={int(util)} shots={int(eval_shots)} "
+                f"avg-rank={float(m['avg_rank']):.4f} base-avg-rank={float(m.get('baseline_avg_rank', float('nan'))):.4f} "
+                f"avg-rank/base={float(m.get('avg_rank_over_baseline', float('nan'))):.4f} "
+                f"corr={float(m['rank_score_corr']):.4f} score={float(m['score']):.4f}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[Evaluator] [multi-agg] util={int(util)} shots={int(eval_shots)} "
+                f"avg-rank={float(m['avg_rank']):.4f} corr={float(m['rank_score_corr']):.4f} "
+                f"score={float(m['score']):.4f}",
+                flush=True,
+            )
+
+    print(
+        f"[Evaluator] [multi-agg] objective={config.EVAL_OBJECTIVE} "
+        f"utils={','.join(str(u) for u in eval_utils)} shots={int(eval_shots)} "
+        f"top-k={top_k_cell}"
+        f"{f' ratio={top_k_ratio_cell}' if top_k_ratio_cell != 'mixed' else ' ratio=mixed'} "
+        f"aggregation={rank_agg_metric} "
+        f"avg-rank={avg_rank:.4f}±{avg_rank_std:.4f} "
+        f"(raw-mean={raw_avg_rank_mean:.4f}±{raw_avg_rank_std:.4f}) "
+        f"corr={rank_score_corr:.4f}±{corr_std:.4f} score={score:.4f} mode={agg_mode}",
         flush=True,
     )
 
@@ -606,11 +909,21 @@ def evaluate(path):
             "avg_rank": avg_rank,
             "inv_avg_rank": inv_avg_rank,
             "rank_score_corr": rank_score_corr,
+            "avg_rank_std": avg_rank_std,
+            "rank_score_corr_std": corr_std,
+            "avg_rank_raw_mean": raw_avg_rank_mean,
+            "avg_rank_raw_std": raw_avg_rank_std,
+            "multi_util_agg_mode": agg_mode,
+            "multi_util_rank_agg_metric": rank_agg_metric,
+            "num_utils": len(eval_utils),
         },
         "artifacts": {
-            "rank_distribution_csv": rank_distribution_csv,
-            "top_pairs_metrics_csv": top_pairs_csv,
-            "top_rank_pairs_all_columns_csv": top_rank_pairs_csv,
-            "objective_summary_csv": objective_summary_csv,
+            "rank_distribution_csv": merged_rank_distribution_csv,
+            "top_pairs_metrics_csv": merged_top_pairs_csv,
+            "top_rank_pairs_all_columns_csv": merged_top_rank_pairs_csv,
+            # "objective_summary_csv": objective_summary_csv,
+            # "objective_summary_by_util_csv": "\n".join(details_lines),
+            # "objective_summary_by_util_extended_csv": "\n".join(details_extended_lines),
+            # "objective_agg_summary_csv": objective_agg_summary_csv,
         },
     })

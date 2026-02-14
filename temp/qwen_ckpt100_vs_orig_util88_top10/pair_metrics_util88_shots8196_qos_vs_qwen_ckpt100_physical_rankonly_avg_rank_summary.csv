@@ -1,0 +1,3 @@
+method,selected_count,top_k,top_k_ratio,selection_scope,avg_rank,objective_score
+orig,36,36,0.1,all_candidates,12.61111111111111,-12.61111111111111
+new,36,36,0.1,all_candidates,13.555555555555555,-13.555555555555555

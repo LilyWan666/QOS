@@ -95,12 +95,31 @@ def _objective_from_avg_rank(avg_rank):
     return -100.0
 
 
+def _resolve_effective_top_k(n_items, top_k, top_k_ratio):
+    if n_items <= 0:
+        return 0, 0.0
+    ratio_raw = float(top_k_ratio or 0.0)
+    ratio = ratio_raw
+    # Accept either fraction (0.1) or percentage (10).
+    if ratio > 1.0 and ratio <= 100.0:
+        ratio = ratio / 100.0
+    if ratio > 0.0:
+        k = int(np.ceil(float(n_items) * ratio))
+        k = max(1, min(n_items, k))
+        return k, ratio
+    k = int(top_k or 1)
+    k = max(1, min(n_items, k))
+    return k, 0.0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True, help="Input CSV with effective_utilization and fidelity")
     parser.add_argument("--util", type=int, default=60, choices=[30, 45, 60, 88])
     parser.add_argument("--shots", type=int, default=1000)
     parser.add_argument("--top-k", type=int, default=24)
+    parser.add_argument("--top-k-ratio", type=float, default=0.0,
+                        help="Top-K ratio. Accepts fraction (0.1) or percent (10 for 10%%).")
     parser.add_argument("--out", default=None, help="Output PNG path")
     parser.add_argument("--out-csv", default=None, help="Output CSV path with rank/flags")
     parser.add_argument("--bar-out", default=None,
@@ -109,6 +128,8 @@ def main():
                         help="Output CSV path for binned mean-fidelity stats")
     parser.add_argument("--summary-csv", default=None,
                         help="Output CSV path for objective summary (avg-rank and score)")
+    parser.add_argument("--title-tag", default="",
+                        help="Optional text tag appended in plot titles, e.g. PHYSICAL")
     parser.add_argument("--util-bin-width", type=float, default=0.02,
                         help="Bin width for effective_utilization in bar chart")
     parser.add_argument("--orig-target", default=None, help="Path to original target (default: target_orig.py)")
@@ -139,10 +160,13 @@ def main():
     config.SHOTS = args.shots
     # Always use full candidate pool (no truncation).
     config.CANDIDATE_LIMIT = None
+    # Always disable CSV-pruned candidate subset in plotting mode.
+    config.EVAL_RESTRICT_TO_CSV = False
     # evaluator imports its own `config` module; keep both in sync
     evaluator.config.TARGET_UTIL = config.TARGET_UTIL
     evaluator.config.SHOTS = config.SHOTS
     evaluator.config.CANDIDATE_LIMIT = config.CANDIDATE_LIMIT
+    evaluator.config.EVAL_RESTRICT_TO_CSV = config.EVAL_RESTRICT_TO_CSV
     _reset_evaluator()
     evaluator._init()
     evaluator._ensure_pair_ranks()
@@ -158,6 +182,9 @@ def main():
     for idx, (_c1, _c2, n1, n2) in enumerate(evaluator._CANDIDATES):
         cand_map[(n1, n2)] = idx
 
+    effective_top_k = 0
+    effective_top_k_ratio = 0.0
+
     if args.restrict_to_csv:
         # Only score the subset that appears in CSV.
         subset_idx = []
@@ -167,6 +194,9 @@ def main():
             if idx is not None:
                 subset_idx.append(idx)
         subset_idx = sorted(set(subset_idx))
+        effective_top_k, effective_top_k_ratio = _resolve_effective_top_k(
+            len(subset_idx), args.top_k, args.top_k_ratio
+        )
 
         scores_orig = {i: None for i in subset_idx}
         scores_new = {i: None for i in subset_idx}
@@ -181,13 +211,24 @@ def main():
             except Exception:
                 scores_new[i] = -1e9
 
-        top_orig = set(sorted(subset_idx, key=lambda i: scores_orig[i])[-args.top_k:])
-        top_new = set(sorted(subset_idx, key=lambda i: scores_new[i])[-args.top_k:])
+        if effective_top_k > 0:
+            top_orig = set(sorted(subset_idx, key=lambda i: scores_orig[i])[-effective_top_k:])
+            top_new = set(sorted(subset_idx, key=lambda i: scores_new[i])[-effective_top_k:])
+        else:
+            top_orig = set()
+            top_new = set()
     else:
         scores_orig = _score_all(score_fn_orig)
         scores_new = _score_all(score_fn_new)
-        top_orig = set(np.argsort(scores_orig)[-args.top_k:])
-        top_new = set(np.argsort(scores_new)[-args.top_k:])
+        effective_top_k, effective_top_k_ratio = _resolve_effective_top_k(
+            len(scores_orig), args.top_k, args.top_k_ratio
+        )
+        if effective_top_k > 0:
+            top_orig = set(np.argsort(scores_orig)[-effective_top_k:])
+            top_new = set(np.argsort(scores_new)[-effective_top_k:])
+        else:
+            top_orig = set()
+            top_new = set()
 
     top_orig_list = sorted(top_orig)
     top_new_list = sorted(top_new)
@@ -208,6 +249,13 @@ def main():
     for i in range(len(rows)):
         rows[i]["topk_orig"] = bool(in_orig[i])
         rows[i]["topk_new"] = bool(in_new[i])
+
+    title_tag = (args.title_tag or "").strip()
+    if title_tag:
+        title_tag = f" [{title_tag}]"
+    top_desc = f"Top-K={effective_top_k}"
+    if effective_top_k_ratio > 0.0:
+        top_desc = f"{top_desc} ({effective_top_k_ratio * 100.0:.1f}%)"
 
     # Plot
     fig, ax = plt.subplots(figsize=(8.5, 6), dpi=150)
@@ -238,7 +286,9 @@ def main():
 
     ax.set_xlabel("Effective Utilization")
     ax.set_ylabel("Fidelity")
-    ax.set_title(f"Effective Utilization vs Fidelity (util={args.util}, Top-K={args.top_k})")
+    ax.set_title(
+        f"Effective Utilization vs Fidelity (util={args.util}, {top_desc}){title_tag}"
+    )
     ax.legend(loc="best")
 
     out_png = args.out
@@ -269,7 +319,8 @@ def main():
         {
             "method": "orig",
             "selected_count": len(top_orig_list),
-            "top_k": int(args.top_k),
+            "top_k": int(effective_top_k),
+            "top_k_ratio": float(effective_top_k_ratio),
             "selection_scope": "csv_subset" if args.restrict_to_csv else "all_candidates",
             "avg_rank": avg_rank_orig,
             "objective_score": score_orig,
@@ -277,7 +328,8 @@ def main():
         {
             "method": "new",
             "selected_count": len(top_new_list),
-            "top_k": int(args.top_k),
+            "top_k": int(effective_top_k),
+            "top_k_ratio": float(effective_top_k_ratio),
             "selection_scope": "csv_subset" if args.restrict_to_csv else "all_candidates",
             "avg_rank": avg_rank_new,
             "objective_score": score_new,
@@ -290,6 +342,7 @@ def main():
                 "method",
                 "selected_count",
                 "top_k",
+                "top_k_ratio",
                 "selection_scope",
                 "avg_rank",
                 "objective_score",
@@ -389,7 +442,9 @@ def main():
     ax2.set_xticklabels(labels, rotation=35, ha="right")
     ax2.set_xlabel("Effective Utilization Bin")
     ax2.set_ylabel("Mean Fidelity")
-    ax2.set_title(f"Mean Fidelity by Utilization Bin (bin={bin_w:.2f}, util={args.util}, Top-K={args.top_k})")
+    ax2.set_title(
+        f"Mean Fidelity by Utilization Bin (bin={bin_w:.2f}, util={args.util}, {top_desc}){title_tag}"
+    )
     ax2.grid(True, axis="y", alpha=0.2)
     ax2.legend(loc="best")
 
