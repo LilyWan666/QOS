@@ -46,6 +46,84 @@ _PAIR_RANKS = None
 _PAIR_PROXY = None
 _SIM = None
 
+_PROXY_DEFAULT_FEATURES = (
+    "depth_ratio",
+    "cnot_ratio",
+    "nonlocal_ratio",
+    "measure_ratio",
+    "instr_ratio",
+)
+
+_PROXY_FEATURE_ALIASES = {
+    "depth": "depth_max",
+    "max_depth": "depth_max",
+    "depth_max": "depth_max",
+    "depthsum": "depth_sum",
+    "number_instructions_ratio": "instr_ratio",
+    "instruction_ratio": "instr_ratio",
+    "instructions_ratio": "instr_ratio",
+    "instr_ratio": "instr_ratio",
+    "num_nonlocal_gates_ratio": "nonlocal_ratio",
+    "nonlocal_gates_ratio": "nonlocal_ratio",
+    "nonlocal_ratio": "nonlocal_ratio",
+    "num_measurements_ratio": "measure_ratio",
+    "measurement_ratio": "measure_ratio",
+    "measure_ratio": "measure_ratio",
+    "meas_ratio": "measure_ratio",
+    "num_cnot_gates_ratio": "cnot_ratio",
+    "cnot_gates_ratio": "cnot_ratio",
+    "cnot_ratio": "cnot_ratio",
+    "-cnot_sum": "cnot_sum",
+    "neg_cnot_sum": "cnot_sum",
+    "-nonlocal_sum": "nonlocal_sum",
+    "neg_nonlocal_sum": "nonlocal_sum",
+    "-instr_sum": "instr_sum",
+    "neg_instr_sum": "instr_sum",
+    "critical_depth_avg": "critical_depth_avg",
+    "critical_depth_2": "critical_depth_2",
+    "criticaldepthavg": "critical_depth_avg",
+    "criticaldepth2": "critical_depth_2",
+    "critical_depth2": "critical_depth_2",
+}
+
+_PROXY_BENEFIT_FEATURES = {
+    "depth_ratio",
+    "cnot_ratio",
+    "nonlocal_ratio",
+    "measure_ratio",
+    "instr_ratio",
+    "qubit_ratio",
+    "entanglement",
+    "measurement",
+    "parallelism",
+    "depth_sim",
+    "critical_depth_avg",
+    "critical_depth_2",
+}
+
+_PROXY_COST_FEATURES = {
+    "depth_sum",
+    "depth_diff",
+    "depth_max",
+    "cnot_sum",
+    "cnot_diff",
+    "cnot_max",
+    "nonlocal_sum",
+    "nonlocal_diff",
+    "nonlocal_max",
+    "measure_sum",
+    "measure_diff",
+    "measure_max",
+    "instr_sum",
+    "instr_diff",
+    "instr_max",
+    "qubits_sum",
+    "qubits_diff",
+    "qubits_max",
+}
+
+_PROXY_SUPPORTED_FEATURES = _PROXY_BENEFIT_FEATURES | _PROXY_COST_FEATURES
+
 
 def _reset_runtime_state():
     global _INIT_DONE, _BENCHMARKS, _CANDIDATES, _FEATURES, _QERNEL_PAIRS, _MP
@@ -150,6 +228,62 @@ def _hypervolume(points: List[Tuple[float, float]], ref: Tuple[float, float]):
     return hv
 
 
+def _canonical_proxy_feature_name(name: str) -> str:
+    key = str(name or "").strip().lower()
+    if not key:
+        return ""
+    return _PROXY_FEATURE_ALIASES.get(key, key)
+
+
+def _resolve_proxy_feature_name() -> str:
+    configured = list(getattr(config, "PROXY_FEATURES", []) or [])
+    candidates = []
+    for raw in configured:
+        canonical = _canonical_proxy_feature_name(raw)
+        if canonical and canonical not in candidates:
+            candidates.append(canonical)
+    if not candidates:
+        candidates = [x for x in _PROXY_DEFAULT_FEATURES]
+
+    selected_raw = str(getattr(config, "PROXY_FEATURE", "") or "").strip().lower()
+    if selected_raw in ("", "auto", "default", "first", "from_list", "list"):
+        selected = candidates[0]
+    elif selected_raw.isdigit():
+        idx = int(selected_raw) - 1
+        if idx < 0 or idx >= len(candidates):
+            raise ValueError(
+                f"Invalid OE_PROXY_FEATURE index: {selected_raw}; valid range is 1..{len(candidates)}."
+            )
+        selected = candidates[idx]
+    else:
+        selected = _canonical_proxy_feature_name(selected_raw)
+
+    if selected not in _PROXY_SUPPORTED_FEATURES:
+        supported = ", ".join(sorted(_PROXY_SUPPORTED_FEATURES))
+        raise ValueError(
+            f"Unsupported OE_PROXY_FEATURE='{selected}'. Supported features: {supported}"
+        )
+    return selected
+
+
+def _resolve_pareto_second_metric() -> str:
+    raw = str(getattr(config, "PARETO_SECOND_METRIC", "fidelity") or "fidelity").strip().lower()
+    if raw in ("fidelity", "fid", "sim", "simulation"):
+        return "fidelity"
+    if raw in ("proxy", "feature", "proxy_feature"):
+        return "proxy"
+    raise ValueError(
+        f"Unsupported OE_PARETO_SECOND_METRIC='{raw}'. Use 'fidelity' or 'proxy'."
+    )
+
+
+def _pareto_second_metric_desc() -> str:
+    mode = _resolve_pareto_second_metric()
+    if mode == "proxy":
+        return f"proxy[{_resolve_proxy_feature_name()}]"
+    return "fidelity"
+
+
 def _fast_fidelity_proxy(q1: Qernel, q2: Qernel) -> float:
     meta1 = q1.get_metadata()
     meta2 = q2.get_metadata()
@@ -165,11 +299,54 @@ def _get_pair_proxy(idx: int) -> float:
     global _PAIR_PROXY
     if _PAIR_PROXY is None:
         _PAIR_PROXY = {}
-    if idx in _PAIR_PROXY:
-        return _PAIR_PROXY[idx]
+    cache_key = ("legacy", int(idx))
+    if cache_key in _PAIR_PROXY:
+        return _PAIR_PROXY[cache_key]
     q1, q2 = _QERNEL_PAIRS[idx]
     val = _fast_fidelity_proxy(q1, q2)
-    _PAIR_PROXY[idx] = val
+    _PAIR_PROXY[cache_key] = val
+    return val
+
+
+def _extract_proxy_feature_raw(idx: int, feature_name: str) -> float:
+    f = _FEATURES[idx]
+    if feature_name in f:
+        return float(f.get(feature_name, 0.0))
+    if feature_name == "depth_max":
+        return float(max(f.get("depth_1", 0.0), f.get("depth_2", 0.0)))
+    if feature_name == "cnot_max":
+        return float(max(f.get("cnot_1", 0.0), f.get("cnot_2", 0.0)))
+    if feature_name == "nonlocal_max":
+        return float(max(f.get("nonlocal_1", 0.0), f.get("nonlocal_2", 0.0)))
+    if feature_name == "measure_max":
+        return float(max(f.get("measure_1", 0.0), f.get("measure_2", 0.0)))
+    if feature_name == "instr_max":
+        return float(max(f.get("instr_1", 0.0), f.get("instr_2", 0.0)))
+    if feature_name == "qubits_max":
+        return float(max(f.get("num_qubits_1", 0.0), f.get("num_qubits_2", 0.0)))
+    raise KeyError(f"Feature '{feature_name}' is not available in _FEATURES.")
+
+
+def _transform_proxy_feature_value(feature_name: str, raw_value: float) -> float:
+    v = float(raw_value)
+    if not np.isfinite(v):
+        return 0.0
+    if feature_name in _PROXY_COST_FEATURES:
+        return 1.0 / (1.0 + max(v, 0.0))
+    return v
+
+
+def _get_pair_feature_proxy(idx: int) -> float:
+    global _PAIR_PROXY
+    if _PAIR_PROXY is None:
+        _PAIR_PROXY = {}
+    feature_name = _resolve_proxy_feature_name()
+    cache_key = ("feature", feature_name, int(idx))
+    if cache_key in _PAIR_PROXY:
+        return _PAIR_PROXY[cache_key]
+    raw_value = _extract_proxy_feature_raw(idx, feature_name)
+    val = _transform_proxy_feature_value(feature_name, raw_value)
+    _PAIR_PROXY[cache_key] = val
     return val
 
 
@@ -211,7 +388,8 @@ def _ensure_pair_ranks():
     if _PAIR_RANKS is not None:
         return
     points = []
-    for i in tqdm(range(len(_CANDIDATES)), desc="Simulating pairs"):
+    desc = f"Building Pareto ranks ({_pareto_second_metric_desc()})"
+    for i in tqdm(range(len(_CANDIDATES)), desc=desc):
         points.append(_get_pair_metrics(i))
     _PAIR_RANKS = _nondominated_ranks(points)
 
@@ -376,9 +554,15 @@ def _load_pair_metrics_from_csv():
             _PAIR_METADATA[key] = row
             try:
                 eff = float(row["effective_utilization"])
-                fid = float(row["fidelity"])
             except Exception:
                 continue
+            fid = float("nan")
+            raw_fid = row.get("fidelity", "")
+            if raw_fid is not None and str(raw_fid).strip() != "":
+                try:
+                    fid = float(raw_fid)
+                except Exception:
+                    fid = float("nan")
             _PAIR_METRICS[key] = (eff, fid)
 
 
@@ -492,16 +676,27 @@ def _score_baseline(f):
 
 
 def _get_pair_metrics(idx: int) -> Tuple[float, float]:
-    circ1, circ2, name1, name2 = _CANDIDATES[idx]
+    _circ1, _circ2, name1, name2 = _CANDIDATES[idx]
     key = f"{name1}+{name2}"
     if key in _PAIR_METRICS:
-        return _PAIR_METRICS[key]
-    if getattr(config, "EVAL_RESTRICT_TO_CSV", False):
-        raise KeyError(
-            f"Missing pair metrics in CSV for key={key} (util={config.TARGET_UTIL}, shots={config.SHOTS})"
+        eff, fid = _PAIR_METRICS[key]
+    else:
+        if getattr(config, "EVAL_RESTRICT_TO_CSV", False):
+            raise KeyError(
+                f"Missing pair metrics in CSV for key={key} (util={config.TARGET_UTIL}, shots={config.SHOTS})"
+            )
+        _PAIR_METRICS[key] = (0.0, 0.0)
+        eff, fid = _PAIR_METRICS[key]
+
+    second_metric_mode = _resolve_pareto_second_metric()
+    if second_metric_mode == "proxy":
+        return float(eff), float(_get_pair_feature_proxy(idx))
+    if not np.isfinite(float(fid)):
+        raise ValueError(
+            f"Missing fidelity for key={key} while OE_PARETO_SECOND_METRIC=fidelity. "
+            "Use OE_PARETO_SECOND_METRIC=proxy or provide fidelity in pair_metrics CSV."
         )
-    _PAIR_METRICS[key] = (0.0, 0.0)
-    return _PAIR_METRICS[key]
+    return float(eff), float(fid)
 
 def _avg_bin_fidelity(points: List[Tuple[float, float]],
                       bin_edges: List[float]) -> float:
@@ -567,6 +762,7 @@ def _evaluate_active_task(candidate_kind: str | None,
     avg_rank = float(np.mean(top_ranks)) if top_ranks else float("inf")
     rank_score_corr = _score_rank_correlation(scores, _PAIR_RANKS)
     score, inv_avg_rank = _objective_from_stats(avg_rank, rank_score_corr)
+    pareto_second_desc = _pareto_second_metric_desc()
 
     def _fmt4(val: float) -> str:
         return f"{val:.4f}".rstrip("0").rstrip(".")
@@ -603,25 +799,45 @@ def _evaluate_active_task(candidate_kind: str | None,
             f"util={int(config.TARGET_UTIL)} shots={int(config.SHOTS)} "
             f"top-k={int(effective_top_k)}"
             f"{f' ratio={effective_top_k_ratio:.4f}' if effective_top_k_ratio > 0.0 else ''} "
-            f"avg-rank={base_avg_rank:.4f} corr={base_corr:.4f} score={base_obj:.4f}",
+            f"avg-rank={base_avg_rank:.4f} corr={base_corr:.4f} score={base_obj:.4f} "
+            f"pareto-second={pareto_second_desc}",
             flush=True,
         )
 
-    top_pairs_lines = ["name_1,name_2,eff_util,fidelity,pareto_rank,score"]
+    pareto_mode = _resolve_pareto_second_metric()
+    include_fidelity_in_artifacts = pareto_mode == "fidelity"
+    if include_fidelity_in_artifacts:
+        top_pairs_lines = [
+            "name_1,name_2,eff_util,fidelity,pareto_second_metric,pareto_second_value,pareto_rank,score"
+        ]
+    else:
+        top_pairs_lines = [
+            "name_1,name_2,eff_util,pareto_second_metric,pareto_second_value,pareto_rank,score"
+        ]
     for i in top_idx:
         _c1, _c2, n1, n2 = _CANDIDATES[i]
-        eff, fid = _get_pair_metrics(i)
+        eff, second_val = _get_pair_metrics(i)
         rnk = _PAIR_RANKS[i]
-        top_pairs_lines.append(f"{n1},{n2},{_fmt4(eff)},{_fmt4(fid)},{rnk},{_fmt4(scores[i])}")
+        if include_fidelity_in_artifacts:
+            _eff_raw, raw_fid = _PAIR_METRICS.get(f"{n1}+{n2}", (eff, float("nan")))
+            top_pairs_lines.append(
+                f"{n1},{n2},{_fmt4(eff)},{_fmt4(raw_fid)},{pareto_second_desc},"
+                f"{_fmt4(second_val)},{rnk},{_fmt4(scores[i])}"
+            )
+        else:
+            top_pairs_lines.append(
+                f"{n1},{n2},{_fmt4(eff)},{pareto_second_desc},{_fmt4(second_val)},{rnk},{_fmt4(scores[i])}"
+            )
     top_pairs_csv = "\n".join(top_pairs_lines)
 
     top_rank_pairs_lines = []
     if _PAIR_METADATA_COLUMNS:
+        base_cols = ("name_1", "name_2", "effective_utilization")
+        if include_fidelity_in_artifacts:
+            base_cols = base_cols + ("fidelity",)
         kept_cols = [
             col for col in _PAIR_METADATA_COLUMNS
-            if col in ("name_1", "name_2", "effective_utilization", "fidelity")
-            or col.startswith("m1_")
-            or col.startswith("m2_")
+            if col in base_cols or col.startswith("m1_") or col.startswith("m2_")
         ]
         header = kept_cols + ["pareto_rank", "score"]
         top_rank_pairs_lines.append(",".join(header))
@@ -646,13 +862,19 @@ def _evaluate_active_task(candidate_kind: str | None,
         f"{_fmt4(avg_rank if np.isfinite(avg_rank) else float('nan'))},"
         f"{_fmt4(inv_avg_rank)},{_fmt4(rank_score_corr)},{_fmt4(score)}",
     ])
+    proxy_feature = _resolve_proxy_feature_name() if pareto_mode == "proxy" else ""
+    pareto_metric_config_csv = "\n".join([
+        "pareto_second_metric,proxy_feature",
+        f"{pareto_mode},{proxy_feature}",
+    ])
 
     print(
         f"[Evaluator] {log_prefix}objective={config.EVAL_OBJECTIVE} "
         f"util={int(config.TARGET_UTIL)} shots={int(config.SHOTS)} "
         f"top-k={int(effective_top_k)}"
         f"{f' ratio={effective_top_k_ratio:.4f}' if effective_top_k_ratio > 0.0 else ''} "
-        f"avg-rank={avg_rank:.4f} corr={rank_score_corr:.4f} score={score:.4f}",
+        f"avg-rank={avg_rank:.4f} corr={rank_score_corr:.4f} score={score:.4f} "
+        f"pareto-second={pareto_second_desc}",
         flush=True,
     )
 
@@ -665,12 +887,14 @@ def _evaluate_active_task(candidate_kind: str | None,
             "rank_score_corr": rank_score_corr,
             "top_k": int(effective_top_k),
             "top_k_ratio": float(effective_top_k_ratio),
+            "pareto_second_metric": pareto_second_desc,
         },
         "artifacts": {
             "rank_distribution_csv": rank_distribution_csv,
             "top_pairs_metrics_csv": top_pairs_csv,
             "top_rank_pairs_all_columns_csv": top_rank_pairs_csv,
             "objective_summary_csv": objective_summary_csv,
+            "pareto_metric_config_csv": pareto_metric_config_csv,
         },
     }
 
@@ -821,6 +1045,7 @@ def evaluate(path):
     rank_score_corr = float(np.mean(corrs)) if corrs else 0.0
     score, inv_avg_rank = _objective_from_stats(avg_rank, rank_score_corr)
     corr_std = float(np.std(corrs)) if len(corrs) > 1 else 0.0
+    pareto_second_desc = _pareto_second_metric_desc()
 
     merged_rank_distribution_csv = _merge_artifact_csv_by_util(
         task_rows, "rank_distribution_csv", eval_shots
@@ -879,14 +1104,15 @@ def evaluate(path):
                 f"[Evaluator] [multi-agg] util={int(util)} shots={int(eval_shots)} "
                 f"avg-rank={float(m['avg_rank']):.4f} base-avg-rank={float(m.get('baseline_avg_rank', float('nan'))):.4f} "
                 f"avg-rank/base={float(m.get('avg_rank_over_baseline', float('nan'))):.4f} "
-                f"corr={float(m['rank_score_corr']):.4f} score={float(m['score']):.4f}",
+                f"corr={float(m['rank_score_corr']):.4f} score={float(m['score']):.4f} "
+                f"pareto-second={pareto_second_desc}",
                 flush=True,
             )
         else:
             print(
                 f"[Evaluator] [multi-agg] util={int(util)} shots={int(eval_shots)} "
                 f"avg-rank={float(m['avg_rank']):.4f} corr={float(m['rank_score_corr']):.4f} "
-                f"score={float(m['score']):.4f}",
+                f"score={float(m['score']):.4f} pareto-second={pareto_second_desc}",
                 flush=True,
             )
 
@@ -898,7 +1124,8 @@ def evaluate(path):
         f"aggregation={rank_agg_metric} "
         f"avg-rank={avg_rank:.4f}±{avg_rank_std:.4f} "
         f"(raw-mean={raw_avg_rank_mean:.4f}±{raw_avg_rank_std:.4f}) "
-        f"corr={rank_score_corr:.4f}±{corr_std:.4f} score={score:.4f} mode={agg_mode}",
+        f"corr={rank_score_corr:.4f}±{corr_std:.4f} score={score:.4f} mode={agg_mode} "
+        f"pareto-second={pareto_second_desc}",
         flush=True,
     )
 
@@ -916,6 +1143,7 @@ def evaluate(path):
             "multi_util_agg_mode": agg_mode,
             "multi_util_rank_agg_metric": rank_agg_metric,
             "num_utils": len(eval_utils),
+            "pareto_second_metric": pareto_second_desc,
         },
         "artifacts": {
             "rank_distribution_csv": merged_rank_distribution_csv,

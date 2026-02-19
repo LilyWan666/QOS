@@ -45,6 +45,24 @@ def _env_int_list(name: str, default: str) -> list[int]:
     return out
 
 
+def _env_str_list(name: str, default: str) -> list[str]:
+    raw = os.environ.get(name, default)
+    values = []
+    for tok in re.split(r"[\s,;:|/]+", raw or ""):
+        tok = tok.strip().lower()
+        if not tok:
+            continue
+        values.append(tok)
+    out = []
+    seen = set()
+    for v in values:
+        if v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "")
     if raw == "":
@@ -86,12 +104,24 @@ EVAL_MODE = "candidate"  # "candidate", "original", "both"
 # - OE_RESTRICT_TO_PAIR_CSV: 1/0, evaluate only pairs existing in pair_metrics csv
 # - OE_TOP_K_RATIO: Top-K ratio (0.1 or 10 both mean 10%; <=0 disables ratio mode)
 # - OE_MULTI_UTIL_AGG: mean | norm_to_baseline
+# - OE_PARETO_SECOND_METRIC: fidelity | proxy
+# - OE_PROXY_FEATURES: candidate proxy features (comma/space separated)
+# - OE_PROXY_FEATURE: one proxy feature to use when OE_PARETO_SECOND_METRIC=proxy
 EVAL_OBJECTIVE = os.environ.get("OE_EVAL_OBJECTIVE", "avg_rank").strip().lower()
 CORR_METHOD = os.environ.get("OE_CORR_METHOD", "spearman").strip().lower()
 CORR_TARGET = os.environ.get("OE_CORR_TARGET", "inv_rank").strip().lower()
 CORR_WEIGHT = _env_float("OE_CORR_WEIGHT", 0.7)
 AVG_RANK_WEIGHT = _env_float("OE_AVG_RANK_WEIGHT", 0.3)
 MULTI_UTIL_AGG = os.environ.get("OE_MULTI_UTIL_AGG", "mean").strip().lower()
+PARETO_SECOND_METRIC = os.environ.get("OE_PARETO_SECOND_METRIC", "fidelity").strip().lower()
+PROXY_FEATURES = _env_str_list(
+    "OE_PROXY_FEATURES",
+    "depth_ratio,cnot_ratio,nonlocal_ratio,measure_ratio,instr_ratio",
+)
+PROXY_FEATURE = os.environ.get(
+    "OE_PROXY_FEATURE",
+    PROXY_FEATURES[0] if PROXY_FEATURES else "instr_ratio",
+).strip().lower()
 
 # Legacy metric weight (kept for compatibility with existing scripts)
 FID_WEIGHT = 0.1
