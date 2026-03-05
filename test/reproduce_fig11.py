@@ -78,12 +78,21 @@ BENCHMARK_MAPPING = {
 }
 
 # Utilization level -> total qubits on 27-qubit QPU
-# Using smaller sizes for faster testing (paper uses {30: 8, 60: 16, 88: 24})
-# UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
-UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
-# No-M/P (Fig.11a) should match paper utilization mapping.
-# NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
-NO_MP_UTIL_TO_QUBITS = {30: 8, 45: 12, 60: 16, 88: 24}
+# Paper points are 30/60/88; we also keep intermediate bins for denser sweeps.
+# Mapping follows round(util% * 27): 37->10, 52->14, 67->18, 74->20, 81->22.
+UTIL_TO_QUBITS = {
+    30: 8,
+    37: 10,
+    45: 12,
+    52: 14,
+    60: 16,
+    67: 18,
+    74: 20,
+    81: 22,
+    88: 24,
+}
+# No-M/P (Fig.11a) should use the same utilization mapping.
+NO_MP_UTIL_TO_QUBITS = dict(UTIL_TO_QUBITS)
 
 # Simulation parameters
 SHOTS = 1000

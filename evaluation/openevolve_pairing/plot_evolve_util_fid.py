@@ -49,7 +49,8 @@ def _score_all(score_fn):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--util", type=int, default=60, choices=[30, 45, 60, 88])
+    util_choices = sorted(evaluator.repro.UTIL_TO_QUBITS.keys())
+    parser.add_argument("--util", type=int, default=60, choices=util_choices)
     parser.add_argument("--shots", type=int, default=1000)
     parser.add_argument("--top-k", type=int, default=24)
     parser.add_argument("--target", default=None, help="Path to evolved target.py (default: openevolve_pairing/target.py)")

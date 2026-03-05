@@ -106,7 +106,8 @@ def _compute_row(idx):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--util", type=int, default=30, choices=[30, 45, 60, 88],
+    util_choices = sorted(evaluator.repro.UTIL_TO_QUBITS.keys())
+    parser.add_argument("--util", type=int, default=30, choices=util_choices,
                         help="TARGET_UTIL (percent)")
     parser.add_argument("--shots", type=int, default=config.SHOTS, help="Simulation shots")
     parser.add_argument("--workers", type=int, default=1,

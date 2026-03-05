@@ -84,6 +84,21 @@ _PROXY_FEATURE_ALIASES = {
     "criticaldepthavg": "critical_depth_avg",
     "criticaldepth2": "critical_depth_2",
     "critical_depth2": "critical_depth_2",
+    "num_measurements_avg": "num_measurements_avg",
+    "num_measurements_sum": "num_measurements_sum",
+    "num_measurements_diff": "measure_diff",
+    "measurement_diff": "measure_diff",
+    "measurements_diff": "measure_diff",
+    "measurements_avg": "num_measurements_avg",
+    "measurements_sum": "num_measurements_sum",
+    "measurement_count_avg": "num_measurements_avg",
+    "measurement_count_sum": "num_measurements_sum",
+    "number_instructions_max": "instr_max",
+    "num_nonlocal_gates_max": "nonlocal_max",
+    "number_instructions_diff": "instr_diff",
+    "num_nonlocal_gates_diff": "nonlocal_diff",
+    "number_instructions_avg": "instr_sum",
+    "num_nonlocal_gates_avg": "nonlocal_sum",
 }
 
 _PROXY_BENEFIT_FEATURES = {
@@ -99,6 +114,8 @@ _PROXY_BENEFIT_FEATURES = {
     "depth_sim",
     "critical_depth_avg",
     "critical_depth_2",
+    "num_measurements_avg",
+    "num_measurements_sum",
 }
 
 _PROXY_COST_FEATURES = {
@@ -310,6 +327,10 @@ def _get_pair_proxy(idx: int) -> float:
 
 def _extract_proxy_feature_raw(idx: int, feature_name: str) -> float:
     f = _FEATURES[idx]
+    if feature_name == "num_measurements_avg":
+        return float(f.get("measure_sum", 0.0)) / 2.0
+    if feature_name == "num_measurements_sum":
+        return float(f.get("measure_sum", 0.0))
     if feature_name in f:
         return float(f.get(feature_name, 0.0))
     if feature_name == "depth_max":
@@ -332,6 +353,9 @@ def _transform_proxy_feature_value(feature_name: str, raw_value: float) -> float
     if not np.isfinite(v):
         return 0.0
     if feature_name in _PROXY_COST_FEATURES:
+        transform = os.environ.get("OE_PROXY_COST_TRANSFORM", "inv").strip().lower()
+        if transform in {"neg", "-raw", "minus_raw"}:
+            return -v
         return 1.0 / (1.0 + max(v, 0.0))
     return v
 
@@ -537,13 +561,27 @@ def _load_pair_metrics_from_csv():
     global _PAIR_METRICS, _PAIR_METADATA, _PAIR_METADATA_COLUMNS
     if _PAIR_METRICS:
         return
-    csv_path = os.path.join(
-        PROJECT_ROOT,
-        "evaluation",
-        "openevolve_pairing",
-        "pairing_metadata",
-        f"pair_metrics_util{config.TARGET_UTIL}_shots{config.SHOTS}.csv",
-    )
+    csv_template = os.environ.get("OE_PAIR_METRICS_TEMPLATE", "").strip()
+    if not csv_template:
+        csv_template = "pair_metrics_util{util}_shots{shots}.csv"
+    try:
+        csv_name = csv_template.format(util=config.TARGET_UTIL, shots=config.SHOTS)
+    except Exception:
+        csv_name = f"pair_metrics_util{config.TARGET_UTIL}_shots{config.SHOTS}.csv"
+
+    csv_dir = os.environ.get("OE_PAIR_METRICS_DIR", "").strip()
+    if csv_dir:
+        if not os.path.isabs(csv_dir):
+            csv_dir = os.path.join(PROJECT_ROOT, csv_dir)
+        csv_path = os.path.join(csv_dir, csv_name)
+    else:
+        csv_path = os.path.join(
+            PROJECT_ROOT,
+            "evaluation",
+            "openevolve_pairing",
+            "pairing_metadata",
+            csv_name,
+        )
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Pair metrics CSV not found: {csv_path}")
     with open(csv_path, "r", encoding="utf-8") as f:

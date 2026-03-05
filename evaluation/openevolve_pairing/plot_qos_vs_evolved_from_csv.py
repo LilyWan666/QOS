@@ -115,7 +115,8 @@ def _resolve_effective_top_k(n_items, top_k, top_k_ratio):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True, help="Input CSV with effective_utilization and fidelity")
-    parser.add_argument("--util", type=int, default=60, choices=[30, 45, 60, 88])
+    util_choices = sorted(evaluator.repro.UTIL_TO_QUBITS.keys())
+    parser.add_argument("--util", type=int, default=60, choices=util_choices)
     parser.add_argument("--shots", type=int, default=1000)
     parser.add_argument("--top-k", type=int, default=24)
     parser.add_argument("--top-k-ratio", type=float, default=0.0,
