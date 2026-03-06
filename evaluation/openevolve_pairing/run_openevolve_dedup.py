@@ -182,8 +182,14 @@ _DEFAULT_INPUT_USD_PER_1M = float(os.environ.get("OE_PRICE_INPUT_USD_PER_1M", "0
 _DEFAULT_OUTPUT_USD_PER_1M = float(os.environ.get("OE_PRICE_OUTPUT_USD_PER_1M", "0") or 0.0)
 
 # Built-in fallback prices used when OE_TOKEN_PRICE_TABLE_JSON is not provided.
-# Source: OpenAI official API pricing page (queried 2026-03-04).
+# Sources (queried 2026-03-05):
+# - OpenAI API pricing: https://platform.openai.com/docs/pricing
+# - Gemini API pricing: https://ai.google.dev/gemini-api/docs/pricing
 _BUILTIN_PRICE_TABLE: Dict[str, Dict[str, float]] = {
+    "gpt-5-mini": {
+        "input_usd_per_1m": 0.25,
+        "output_usd_per_1m": 2.0,
+    },
     "gpt-5-mini:flex": {
         "input_usd_per_1m": 0.125,
         "output_usd_per_1m": 1.0,
@@ -192,6 +198,11 @@ _BUILTIN_PRICE_TABLE: Dict[str, Dict[str, float]] = {
     "gemini-3-flash-preview": {
         "input_usd_per_1m": 0.50,
         "output_usd_per_1m": 3.00,
+    },
+    # Gemini 3 Pro Preview (Gemini Developer API, Standard tier, <=200k token pricing tier).
+    "gemini-3-pro-preview": {
+        "input_usd_per_1m": 2.50,
+        "output_usd_per_1m": 15.00,
     },
 }
 
@@ -290,10 +301,20 @@ def _resolve_token_prices(model: str, provider: str) -> Dict[str, Any]:
         alias_candidates.extend(["gpt53codex", "gpt-5.3-codex", "gpt 5.3 codex"])
     if ("claude" in ml_n and "sonnet" in ml_n and "46" in ml_n) or ("claudesonnet46" in ml_n):
         alias_candidates.extend(
-            ["claudesonnet46", "claude-sonnet-4.6", "claude sonnet 4.6"]
+            [
+                "claudesonnet46",
+                "claude-sonnet-4-6",
+                "claude sonnet 4 6",
+            ]
         )
     if ("claude" in ml_n and "opus" in ml_n and "46" in ml_n) or ("claudeopus46" in ml_n):
-        alias_candidates.extend(["claudeopus46", "claude-opus-4.6", "claude opus 4.6"])
+        alias_candidates.extend(
+            [
+                "claudeopus46",
+                "claude-opus-4-6",
+                "claude opus 4 6",
+            ]
+        )
 
     # Also allow provider-level aliases.
     provider_aliases = [pl, pl_n]

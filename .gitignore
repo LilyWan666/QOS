@@ -38,6 +38,7 @@ evaluation/openevolve_pairing/$OUT_CFG
 evaluation/openevolve_pairing/.tmp_*.env
 evaluation/openevolve_pairing/plot_qos_vs_target_physical*.env
 evaluation/openevolve_pairing/run_vllm_openevolve_qwen3_14b_awq.slurm
+evaluation/openevolve_pairing/figures/*
 temp/qos_seed_vs_target/
 temp/qos_seed_vs_target_physical/
 ibm_quantum/
