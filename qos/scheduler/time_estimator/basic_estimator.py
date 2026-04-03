@@ -8,7 +8,7 @@ from qiskit.circuit import Measure, Gate
 from qiskit.converters import circuit_to_dag
 from qiskit.providers import Backend
 
-from qos.time_estimator.base_estimator import BaseEstimator
+from qos.scheduler.time_estimator.base_estimator import BaseEstimator
 
 Assignment: TypeAlias = tuple[QuantumCircuit, Backend]
 

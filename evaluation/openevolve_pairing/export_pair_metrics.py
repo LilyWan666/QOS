@@ -3,7 +3,9 @@ import argparse
 import csv
 import json
 import os
+import random
 import sys
+import time
 from multiprocessing import Pool
 
 import numpy as np
@@ -85,11 +87,15 @@ def _init_worker(util, shots):
 
 
 def _compute_row(idx):
+    t_wall0 = time.perf_counter()
+    t_cpu0 = time.process_time()
     circ1, circ2, name1, name2 = evaluator._CANDIDATES[idx]
     q1, q2 = evaluator._QERNEL_PAIRS[idx]
     m1 = q1.get_metadata()
     m2 = q2.get_metadata()
     eff, fid = evaluator._get_pair_metrics(idx)
+    pair_wall_sec = time.perf_counter() - t_wall0
+    pair_cpu_sec = time.process_time() - t_cpu0
 
     row = {
         "name_1": name1,
@@ -97,6 +103,10 @@ def _compute_row(idx):
         "effective_utilization": float(eff),
         "fidelity": float(fid),
         "pair_index": idx,
+        "pair_wall_sec": float(pair_wall_sec),
+        "pair_cpu_sec": float(pair_cpu_sec),
+        "pair_perf_source": "measured",
+        "worker_pid": int(os.getpid()),
     }
     row.update(_flatten_meta("m1_", m1))
     row.update(_flatten_meta("m2_", m2))
@@ -117,6 +127,10 @@ def main():
     parser.add_argument("--format", choices=["csv", "json"], default="csv")
     parser.add_argument("--out-dir", default="pairing_metadata")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--sample-k", type=int, default=0,
+                        help="If >0, simulate only a deterministic sample of K pairs")
+    parser.add_argument("--sample-seed", type=int, default=42,
+                        help="Random seed used when --sample-k > 0")
     parser.add_argument("--recompute", action="store_true",
                         help="Recompute all rows and overwrite existing output file")
     parser.add_argument("--debug", action="store_true", help="Print target qubits and sample pairs")
@@ -140,7 +154,13 @@ def main():
             print(f"[Debug] pair: {n1} + {n2}")
 
     if args.out is None:
-        out_name = f"pair_metrics_util{args.util}_shots{args.shots}.{args.format}"
+        if args.sample_k > 0:
+            out_name = (
+                f"pair_metrics_util{args.util}_shots{args.shots}"
+                f"_sample{args.sample_k}_seed{args.sample_seed}.{args.format}"
+            )
+        else:
+            out_name = f"pair_metrics_util{args.util}_shots{args.shots}.{args.format}"
     else:
         out_name = args.out
     out_dir = args.out_dir
@@ -172,8 +192,18 @@ def main():
                         existing[k] = row
 
     total = len(evaluator._CANDIDATES)
+    selected_indices = list(range(total))
+    if args.sample_k > 0:
+        sample_k = min(args.sample_k, total)
+        rng = random.Random(args.sample_seed)
+        selected_indices = sorted(rng.sample(selected_indices, sample_k))
+        print(
+            f"[INFO] sample mode enabled: selected {sample_k}/{total} pairs "
+            f"(seed={args.sample_seed})",
+            flush=True,
+        )
     todo_indices = []
-    for idx in range(total):
+    for idx in selected_indices:
         _, _, name1, name2 = evaluator._CANDIDATES[idx]
         key = tuple(sorted((name1, name2)))
         if key in existing:

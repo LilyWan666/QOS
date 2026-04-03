@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Any, Dict, List, Set, Tuple
 
+import requests
 from openevolve import cli as openevolve_cli
 from openevolve.evaluator import Evaluator
 from openevolve.iteration import run_iteration_with_shared_db as _ORIGINAL_RUN_ITERATION
@@ -25,6 +26,12 @@ LOGGER = logging.getLogger("openevolve_dedup_runner")
 _PROMPT_MIN_INTERVAL_SEC = float(os.environ.get("OE_PROMPT_MIN_INTERVAL_SEC", "0") or 0.0)
 _LAST_PROMPT_TS = 0.0
 _PROMPT_LOCK = threading.Lock()
+_PROMPT_ARTIFACT_KEYS_RAW = os.environ.get("OE_PROMPT_ARTIFACT_KEYS", "").strip()
+_PROMPT_ARTIFACT_KEYS = {
+    token.strip()
+    for token in re.split(r"[,;:\s]+", _PROMPT_ARTIFACT_KEYS_RAW)
+    if token.strip()
+}
 
 
 def _normalize_source(text: str) -> str:
@@ -104,10 +111,20 @@ def _build_prompt_with_dedup(self: PromptSampler, *args: Any, **kwargs: Any) -> 
 
     # Keep telemetry in trace/db, but never feed it back into model prompts.
     program_artifacts = bound.arguments.get("program_artifacts")
-    if isinstance(program_artifacts, dict) and "qos_iteration_stats_json" in program_artifacts:
-        filtered = {k: v for k, v in program_artifacts.items() if k != "qos_iteration_stats_json"}
+    if isinstance(program_artifacts, dict):
+        filtered = dict(program_artifacts)
+        if "qos_iteration_stats_json" in filtered:
+            filtered = {k: v for k, v in filtered.items() if k != "qos_iteration_stats_json"}
+            LOGGER.info("Prompt artifacts filter removed 'qos_iteration_stats_json'")
+        if _PROMPT_ARTIFACT_KEYS:
+            before_keys = sorted(filtered.keys())
+            filtered = {k: v for k, v in filtered.items() if k in _PROMPT_ARTIFACT_KEYS}
+            LOGGER.info(
+                "Prompt artifacts whitelist active: kept=%s removed=%s",
+                sorted(filtered.keys()),
+                [k for k in before_keys if k not in filtered],
+            )
         bound.arguments["program_artifacts"] = filtered
-        LOGGER.info("Prompt artifacts filter removed 'qos_iteration_stats_json'")
 
     removed_total = removed_prev + removed_top + removed_insp
     if removed_total > 0:
@@ -182,7 +199,7 @@ _DEFAULT_INPUT_USD_PER_1M = float(os.environ.get("OE_PRICE_INPUT_USD_PER_1M", "0
 _DEFAULT_OUTPUT_USD_PER_1M = float(os.environ.get("OE_PRICE_OUTPUT_USD_PER_1M", "0") or 0.0)
 
 # Built-in fallback prices used when OE_TOKEN_PRICE_TABLE_JSON is not provided.
-# Sources (queried 2026-03-05):
+# Sources (queried 2026-03-09):
 # - OpenAI API pricing: https://platform.openai.com/docs/pricing
 # - Gemini API pricing: https://ai.google.dev/gemini-api/docs/pricing
 _BUILTIN_PRICE_TABLE: Dict[str, Dict[str, float]] = {
@@ -193,6 +210,10 @@ _BUILTIN_PRICE_TABLE: Dict[str, Dict[str, float]] = {
     "gpt-5-mini:flex": {
         "input_usd_per_1m": 0.125,
         "output_usd_per_1m": 1.0,
+    },
+    "gpt-5.3-codex": {
+        "input_usd_per_1m": 1.75,
+        "output_usd_per_1m": 14.0,
     },
     # Gemini 3 Flash Preview (Gemini Developer API, Standard tier, text/image/video input).
     "gemini-3-flash-preview": {
@@ -583,6 +604,134 @@ def _to_responses_params(chat_params: Dict[str, Any]) -> Dict[str, Any]:
     return params
 
 
+def _anthropic_api_base(base: Any) -> str:
+    return str(base or "https://api.anthropic.com/v1/").rstrip("/")
+
+
+def _anthropic_api_key(llm: OpenAILLM) -> str:
+    key = getattr(llm, "api_key", None)
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+    client = getattr(llm, "client", None)
+    key = getattr(client, "api_key", None)
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+    raise RuntimeError("Anthropic API key is missing on Claude client")
+
+
+def _to_anthropic_messages_payload(chat_params: Dict[str, Any]) -> Dict[str, Any]:
+    system_parts: List[str] = []
+    messages: List[Dict[str, Any]] = []
+    for raw in chat_params.get("messages", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role", "user") or "user").strip().lower()
+        content = raw.get("content", "")
+        if isinstance(content, list):
+            text_parts: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        txt = item.get("text")
+                        if isinstance(txt, str) and txt:
+                            text_parts.append(txt)
+                elif isinstance(item, str) and item:
+                    text_parts.append(item)
+            content = "\n".join(text_parts)
+        if not isinstance(content, str):
+            content = str(content)
+        if role == "system":
+            if content.strip():
+                system_parts.append(content)
+            continue
+        if role not in {"user", "assistant"}:
+            role = "user"
+        messages.append({"role": role, "content": content})
+
+    payload: Dict[str, Any] = {
+        "model": chat_params.get("model"),
+        "messages": messages,
+        "max_tokens": int(chat_params.get("max_completion_tokens", chat_params.get("max_tokens", 4096))),
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(system_parts)
+    for key in ("temperature", "top_p"):
+        value = chat_params.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _extract_anthropic_usage(raw: Dict[str, Any]) -> Dict[str, Any]:
+    usage = raw.get("usage") if isinstance(raw, dict) else None
+    out: Dict[str, Any] = {
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "cached_prompt_tokens": None,
+        "reasoning_tokens": None,
+        "thinking_tokens": None,
+        "usage_raw": None,
+        "usage_source": None,
+    }
+    if not isinstance(usage, dict):
+        return out
+    prompt_tokens = usage.get("input_tokens")
+    completion_tokens = usage.get("output_tokens")
+    total_tokens = None
+    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+        total_tokens = prompt_tokens + completion_tokens
+    out.update(
+        {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "usage_raw": _to_json_safe(usage),
+            "usage_source": "anthropic_messages_usage",
+        }
+    )
+    return out
+
+
+def _extract_anthropic_text(raw: Dict[str, Any]) -> str:
+    content = raw.get("content") if isinstance(raw, dict) else None
+    if not isinstance(content, list):
+        raise RuntimeError("Anthropic messages response returned no content list")
+    chunks: List[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            txt = item.get("text")
+            if isinstance(txt, str) and txt:
+                chunks.append(txt)
+    if chunks:
+        return "".join(chunks)
+    raise RuntimeError("Anthropic messages response returned no textual output")
+
+
+def _anthropic_messages_create(llm: OpenAILLM, chat_params: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    payload = _to_anthropic_messages_payload(chat_params)
+    response = requests.post(
+        f"{_anthropic_api_base(getattr(llm, 'api_base', None))}/messages",
+        headers={
+            "x-api-key": _anthropic_api_key(llm),
+            "anthropic-version": os.environ.get("ANTHROPIC_VERSION", "2023-06-01"),
+            "content-type": "application/json",
+        },
+        json=payload,
+        timeout=float(os.environ.get("ANTHROPIC_TIMEOUT_SEC", "180")),
+    )
+    try:
+        raw = response.json()
+    except Exception:
+        raw = {"status_code": response.status_code, "text": response.text[:2000]}
+    response.raise_for_status()
+    text = _extract_anthropic_text(raw)
+    usage = _extract_anthropic_usage(raw)
+    return text, usage, raw
+
+
 async def _openai_call_api_with_responses_fallback(self: OpenAILLM, params: Dict[str, Any]) -> str:
     if self.client is None:
         raise RuntimeError("OpenAI client is not initialized (manual_mode enabled?)")
@@ -613,6 +762,24 @@ async def _openai_call_api_with_responses_fallback(self: OpenAILLM, params: Dict
         and "service_tier" not in params
     ):
         params["service_tier"] = _OPENAI_SERVICE_TIER
+
+    if "anthropic" in str(self.api_base).lower():
+        loop = asyncio.get_event_loop()
+        text, usage, raw = await loop.run_in_executor(
+            None, lambda: _anthropic_messages_create(self, params)
+        )
+        if usage.get("prompt_tokens") is None:
+            msg_txt = "\n".join(
+                str(m.get("content", "")) for m in params.get("messages", []) if isinstance(m, dict)
+            )
+            usage["prompt_tokens"] = _estimate_tokens_from_text(msg_txt)
+            usage["completion_tokens"] = _estimate_tokens_from_text(text)
+            usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+            usage["usage_source"] = "heuristic_char_div4"
+        self._qos_last_provider = "claude_native"
+        self._qos_last_usage = usage
+        self._qos_last_raw_response = raw
+        return text
 
     if not _should_use_responses_endpoint(self):
         loop = asyncio.get_event_loop()

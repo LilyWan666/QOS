@@ -26,6 +26,8 @@ FIG_BASE = ROOT / "figures" / "six_model_physical_best"
 
 EVAL_UTILS = [30, 60, 88]
 TOP_RATIOS = [0.10, 0.20]
+TARGET_QUBITS = {30: 8, 60: 16, 88: 24}
+BACKEND_QUBITS = 133
 
 
 @dataclass(frozen=True)
@@ -238,6 +240,11 @@ def main() -> None:
                         "missing_count": miss_count,
                         "mean_fidelity": mean_fid,
                         "mean_effective_utilization": mean_eff,
+                        "mean_normalized_effective_utilization": (
+                            mean_eff / (TARGET_QUBITS[util] / BACKEND_QUBITS)
+                            if np.isfinite(mean_eff)
+                            else float("nan")
+                        ),
                     }
                 )
 
@@ -259,6 +266,7 @@ def main() -> None:
                 "missing_count",
                 "mean_fidelity",
                 "mean_effective_utilization",
+                "mean_normalized_effective_utilization",
             ],
         )
         writer.writeheader()
@@ -270,6 +278,11 @@ def main() -> None:
             sub = [r for r in detail_rows if r["method"] == m["label"] and abs(r["top_ratio"] - top_ratio) < 1e-12]
             fvals = [float(r["mean_fidelity"]) for r in sub if np.isfinite(float(r["mean_fidelity"]))]
             uvals = [float(r["mean_effective_utilization"]) for r in sub if np.isfinite(float(r["mean_effective_utilization"]))]
+            nuvals = [
+                float(r["mean_normalized_effective_utilization"])
+                for r in sub
+                if np.isfinite(float(r["mean_normalized_effective_utilization"]))
+            ]
             agg_rows.append(
                 {
                     "method": m["label"],
@@ -280,6 +293,7 @@ def main() -> None:
                     "top_label": ratio_label(top_ratio),
                     "avg_mean_fidelity_eval306088": float(np.mean(fvals)) if fvals else float("nan"),
                     "avg_mean_effective_utilization_eval306088": float(np.mean(uvals)) if uvals else float("nan"),
+                    "avg_mean_normalized_effective_utilization_eval306088": float(np.mean(nuvals)) if nuvals else float("nan"),
                 }
             )
 
@@ -296,6 +310,7 @@ def main() -> None:
                 "top_label",
                 "avg_mean_fidelity_eval306088",
                 "avg_mean_effective_utilization_eval306088",
+                "avg_mean_normalized_effective_utilization_eval306088",
             ],
         )
         writer.writeheader()
@@ -326,8 +341,8 @@ def main() -> None:
 
     fid_top10 = _series("avg_mean_fidelity_eval306088", 0.10)
     fid_top20 = _series("avg_mean_fidelity_eval306088", 0.20)
-    util_top10 = _series("avg_mean_effective_utilization_eval306088", 0.10)
-    util_top20 = _series("avg_mean_effective_utilization_eval306088", 0.20)
+    util_top10 = _series("avg_mean_normalized_effective_utilization_eval306088", 0.10) * 100.0
+    util_top20 = _series("avg_mean_normalized_effective_utilization_eval306088", 0.20) * 100.0
     fid_base_top10 = float(
         next(
             r for r in agg_rows if r["method"] == TARGET_LABEL and abs(r["top_ratio"] - 0.10) < 1e-12
@@ -338,15 +353,15 @@ def main() -> None:
             r for r in agg_rows if r["method"] == TARGET_LABEL and abs(r["top_ratio"] - 0.20) < 1e-12
         )["avg_mean_fidelity_eval306088"]
     )
-    util_base_top10 = float(
+    util_base_top10 = 100.0 * float(
         next(
             r for r in agg_rows if r["method"] == TARGET_LABEL and abs(r["top_ratio"] - 0.10) < 1e-12
-        )["avg_mean_effective_utilization_eval306088"]
+        )["avg_mean_normalized_effective_utilization_eval306088"]
     )
-    util_base_top20 = float(
+    util_base_top20 = 100.0 * float(
         next(
             r for r in agg_rows if r["method"] == TARGET_LABEL and abs(r["top_ratio"] - 0.20) < 1e-12
-        )["avg_mean_effective_utilization_eval306088"]
+        )["avg_mean_normalized_effective_utilization_eval306088"]
     )
 
     fig1, ax1 = plt.subplots(figsize=(12, 6), dpi=220)
@@ -354,8 +369,8 @@ def main() -> None:
     b2 = ax1.bar(x + width / 2, fid_top20, width=width, label="Top20%", color="#F58518", edgecolor="black")
     ax1.set_xticks(x)
     ax1.set_xticklabels(bar_methods, rotation=16, ha="right")
-    ax1.set_ylabel("Mean Fidelity (physical)")
-    ax1.set_title("Best Model Physical Fidelity (avg over eval util 30/60/88)")
+    ax1.set_ylabel("Mean Fidelity")
+    ax1.set_title("Best Model Fidelity (avg over eval util 30/60/88)")
     ax1.grid(axis="y", alpha=0.25)
     ax1.axhline(
         fid_base_top10,
@@ -385,8 +400,8 @@ def main() -> None:
     c2 = ax2.bar(x + width / 2, util_top20, width=width, label="Top20%", color="#F58518", edgecolor="black")
     ax2.set_xticks(x)
     ax2.set_xticklabels(bar_methods, rotation=16, ha="right")
-    ax2.set_ylabel("Mean Effective Utilization (physical)")
-    ax2.set_title("Best Model Physical Effective Utilization (avg over eval util 30/60/88)")
+    ax2.set_ylabel("Mean Normalized Eff. Util. (%)")
+    ax2.set_title("Best Model Normalized Effective Utilization (avg over eval util 30/60/88)")
     ax2.grid(axis="y", alpha=0.25)
     ax2.axhline(
         util_base_top10,
@@ -419,16 +434,18 @@ def main() -> None:
         "GPT-5.3 Codex": "GPT-5.3 Codex",
         "Claude Sonnet 4.6": "Sonnet 4.6",
         "Claude Opus 4.6": "Opus 4.6",
-        TARGET_LABEL: "target.py",
+        "QOS+QOS": "QOS+QOS",
+        "MP+QOS": "MP+QOS",
     }
 
-    for i, m in enumerate(methods):
+    model_legend_handles = []
+    for m in methods:
         m_label = m["label"]
         row10 = next(r for r in agg_rows if r["method"] == m_label and abs(r["top_ratio"] - 0.10) < 1e-12)
         row20 = next(r for r in agg_rows if r["method"] == m_label and abs(r["top_ratio"] - 0.20) < 1e-12)
-        x10 = float(row10["avg_mean_effective_utilization_eval306088"])
+        x10 = float(row10["avg_mean_normalized_effective_utilization_eval306088"]) * 100.0
         y10 = float(row10["avg_mean_fidelity_eval306088"])
-        x20 = float(row20["avg_mean_effective_utilization_eval306088"])
+        x20 = float(row20["avg_mean_normalized_effective_utilization_eval306088"]) * 100.0
         y20 = float(row20["avg_mean_fidelity_eval306088"])
 
         color = colors.get(m_label, "#777777")
@@ -455,27 +472,41 @@ def main() -> None:
             linewidths=0.6,
             zorder=z + 1,
         )
-        dy = 5 + (i % 3) * 2
-        ax3.annotate(
-            short_name.get(m_label, m_label),
-            xy=(x10, y10),
-            xytext=(6, dy),
-            textcoords="offset points",
-            fontsize=8.2 if not is_target else 9,
-            color="#111111",
-            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.75),
+        model_legend_handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color=color,
+                markeredgecolor="black",
+                markeredgewidth=0.6,
+                linestyle="None",
+                markersize=8.5 if not is_target else 10.0,
+                label=short_name.get(m_label, m_label),
+            )
         )
 
-    ax3.set_xlabel("Mean Effective Utilization (physical)")
-    ax3.set_ylabel("Mean Fidelity (physical)")
-    ax3.set_title("Physical Fidelity vs Effective Utilization (Top10/Top20, with target.py)")
+    ax3.set_xlabel("Mean Normalized Eff. Util. (%)")
+    ax3.set_ylabel("Mean Fidelity")
+    ax3.set_title("Fidelity vs Normalized Effective Utilization (Top10/Top20, with target.py)")
     ax3.grid(alpha=0.22, linestyle=":")
 
     legend_handles = [
         plt.Line2D([0], [0], marker="o", color="#333333", linestyle="None", label="Top10%"),
         plt.Line2D([0], [0], marker="^", color="#333333", linestyle="None", label="Top20%"),
     ]
-    ax3.legend(handles=legend_handles, loc="lower right")
+    marker_legend = ax3.legend(handles=legend_handles, loc="lower right", title="Selection")
+    ax3.add_artist(marker_legend)
+    ax3.legend(
+        handles=model_legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        frameon=True,
+        title="Method",
+        fontsize=8.4,
+        title_fontsize=9.0,
+    )
     fig3.tight_layout()
     fig3.savefig(out_dir / "figure_scatter_effutil_vs_fidelity_with_target.png", dpi=240)
     plt.close(fig3)

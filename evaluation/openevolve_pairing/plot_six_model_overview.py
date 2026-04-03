@@ -131,9 +131,10 @@ def apply_cost_fallback(
         return metric
 
     pricing: Dict[str, Tuple[float, float]] = {
-        # OpenAI official pricing (2026-03-05): https://platform.openai.com/docs/pricing
+        # OpenAI official pricing (2026-03-09): https://platform.openai.com/docs/pricing
         "gpt-5-mini": (0.25, 2.0),
         "gpt-5-mini:flex": (0.125, 1.0),
+        "gpt-5.3-codex": (1.75, 14.0),
         # Gemini API pricing (2026-03-05): https://ai.google.dev/gemini-api/docs/pricing
         "gemini-3-pro-preview": (2.5, 15.0),
     }
@@ -160,6 +161,22 @@ def format_k(value: float) -> str:
     return f"{value / 1000.0:.1f}k"
 
 
+def style_axes(fig, ax) -> None:
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+    ax.grid(axis="y", color="#d9d9d9", linewidth=1.0)
+    ax.grid(axis="x", visible=False)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="both", labelsize=13)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+
+
+def save_figure(fig, out_dir: Path, stem: str) -> None:
+    fig.savefig(out_dir / f"{stem}.png", dpi=220)
+    fig.savefig(out_dir / f"{stem}.pdf")
+
+
 def make_plots(labels: List[str], stats: List[Dict[str, float]], out_dir: Path) -> None:
     x = np.arange(len(labels))
 
@@ -170,10 +187,20 @@ def make_plots(labels: List[str], stats: List[Dict[str, float]], out_dir: Path) 
     llm_time = np.array([s["llm_time_sec"] for s in stats])
     eval_time = np.array([s["eval_time_sec"] for s in stats])
 
-    plt.style.use("ggplot")
+    plt.style.use("default")
+    plt.rcParams.update(
+        {
+            "axes.titlesize": 22,
+            "axes.labelsize": 20,
+            "legend.fontsize": 16,
+            "xtick.labelsize": 15,
+            "ytick.labelsize": 15,
+        }
+    )
 
     # Figure 1: Tokens
     fig1, ax1 = plt.subplots(figsize=(12, 6))
+    style_axes(fig1, ax1)
     ax1.bar(x, prompt_tokens, label="Prompt", color="#d9824f", edgecolor="black")
     ax1.bar(
         x,
@@ -186,16 +213,16 @@ def make_plots(labels: List[str], stats: List[Dict[str, float]], out_dir: Path) 
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels, rotation=15, ha="right")
     ax1.set_ylabel("Total Tokens")
-    ax1.set_title("Token Usage Across 6 Models")
     ax1.legend(loc="upper left")
     for i, total in enumerate(prompt_tokens + completion_tokens):
-        ax1.text(i, total + max(total * 0.01, 1), format_k(total), ha="center", va="bottom", fontsize=10)
+        ax1.text(i, total + max(total * 0.01, 1), format_k(total), ha="center", va="bottom", fontsize=16)
     fig1.tight_layout()
-    fig1.savefig(out_dir / "figure_tokens.png", dpi=220)
+    save_figure(fig1, out_dir, "figure_tokens")
     plt.close(fig1)
 
     # Figure 2: Cost (USD)
     fig2, ax2 = plt.subplots(figsize=(12, 6))
+    style_axes(fig2, ax2)
     ax2.bar(x, input_cost, label="Prompt/Input Cost", color="#4c72b0", edgecolor="black")
     ax2.bar(
         x,
@@ -208,16 +235,16 @@ def make_plots(labels: List[str], stats: List[Dict[str, float]], out_dir: Path) 
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=15, ha="right")
     ax2.set_ylabel("Estimated Total Cost (USD)")
-    ax2.set_title("Estimated Cost Across 6 Models")
     ax2.legend(loc="upper left")
     for i, total in enumerate(input_cost + output_cost):
-        ax2.text(i, total + max(total * 0.01, 0.01), f"${total:.2f}", ha="center", va="bottom", fontsize=10)
+        ax2.text(i, total + max(total * 0.01, 0.01), f"${total:.2f}", ha="center", va="bottom", fontsize=16)
     fig2.tight_layout()
-    fig2.savefig(out_dir / "figure_cost_usd.png", dpi=220)
+    save_figure(fig2, out_dir, "figure_cost_usd")
     plt.close(fig2)
 
     # Figure 3: Runtime (sec)
     fig3, ax3 = plt.subplots(figsize=(12, 6))
+    style_axes(fig3, ax3)
     ax3.bar(x, llm_time, label="LLM", color="#4c72b0", edgecolor="black")
     ax3.bar(
         x,
@@ -230,13 +257,12 @@ def make_plots(labels: List[str], stats: List[Dict[str, float]], out_dir: Path) 
     ax3.set_xticks(x)
     ax3.set_xticklabels(labels, rotation=15, ha="right")
     ax3.set_ylabel("Total Time (s)")
-    ax3.set_title("Runtime Across 6 Models")
     ax3.legend(loc="upper left")
     total_time = llm_time + eval_time
     for i, total in enumerate(total_time):
-        ax3.text(i, total + max(total * 0.01, 1), f"{total / 3600.0:.2f}h", ha="center", va="bottom", fontsize=10)
+        ax3.text(i, total + max(total * 0.01, 1), f"{total / 3600.0:.2f}h", ha="center", va="bottom", fontsize=16)
     fig3.tight_layout()
-    fig3.savefig(out_dir / "figure_runtime.png", dpi=220)
+    save_figure(fig3, out_dir, "figure_runtime")
     plt.close(fig3)
 
 

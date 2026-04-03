@@ -84,8 +84,20 @@ prompt:
     * Maximize the evaluator's current objective score (as configured externally).
 
     ARTIFACTS:
-    - rank_distribution_csv: Per-rank (order) counts for all pairs and for the Top-K
-      selected by your score. Columns: rank,total_pairs,selected_pairs,selected_pct.
+    You may receive evaluator artifacts from previous iterations. Use them to infer
+    what kinds of pairs your current scoring function is selecting and how those
+    selections align with strong Pareto rank.
+    - rank_distribution_csv: Shows how often each Pareto rank appears overall and
+      within your selected Top-K pairs. Use this to see whether your score is concentrating
+      mass on strong ranks.
+    - top_pairs_metrics_csv: Shows the Top-K pairs chosen by your score together
+      with effective utilization, Pareto metric values, Pareto rank, and score.
+      Use this to understand which pair characteristics your current formula is rewarding.
+    - top_rank_pairs_all_columns_csv: Expanded pair-level table for top-ranked pairs.
+      Use this to inspect which metadata patterns tend to appear in strong candidates.
+    - qos_iteration_stats_json: Per-iteration token, runtime, and cost statistics.
+      This is secondary diagnostic information; optimize for evaluator score, not for
+      lower token usage.
 
   evaluator_system_message: "You are a strict code reviewer. Do not add commentary."
   num_top_programs: 1

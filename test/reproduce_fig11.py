@@ -25,6 +25,7 @@ import sys
 import json
 import random
 import warnings
+from types import SimpleNamespace
 from typing import Dict, List, Tuple, Any
 from collections import defaultdict
 
@@ -50,7 +51,7 @@ if PROJECT_ROOT not in sys.path:
 # QOS imports
 from qos.types.types import Qernel
 from qos.multiprogrammer.multiprogrammer import Multiprogrammer
-from qos.error_mitigator.analyser import SupermarqFeaturesAnalysisPass
+from qos.error_mitigator.analyser import BasicAnalysisPass, SupermarqFeaturesAnalysisPass
 from Baseline_Multiprogramming import multiprogramming as baseline_mp
 
 # Configure matplotlib
@@ -97,9 +98,10 @@ NO_MP_UTIL_TO_QUBITS = dict(UTIL_TO_QUBITS)
 # Simulation parameters
 SHOTS = 1000
 N_PAIRS_PER_UTIL = 24  # None means use all candidate pairs
-BASELINE_PAIRING_MODE = "random"  # "ranked" or "random"
-QOS_PAIRING_MODE = "process_qernels"  # "process_qernels" or "score_topk"
+BASELINE_PAIRING_MODE = os.getenv("BASELINE_PAIRING_MODE", "random")  # "ranked", "random", or "mp_score"
+QOS_PAIRING_MODE = os.getenv("QOS_PAIRING_MODE", "process_qernels")  # "process_qernels" or "score_topk"
 QOS_MATCH_THRESHOLD = 0.0
+QOS_LAYOUT_MODE = os.getenv("QOS_LAYOUT_MODE", "heuristic")  # "heuristic" or "estimator_process"
 SCATTER_LAYOUT_MODE = "qos"  # "qos" to fix layout, "baseline" for baseline layout
 
 # Noise model presets from IBM QPU metrics (median / layered 2Q error, median readout error)
@@ -108,8 +110,8 @@ NOISE_2Q_MODE = "layered"  # "median" or "layered"
 NOISE_1Q_FRACTION = 0.1  # 1Q error is not provided; use a fraction of 2Q error
 
 # Pareto analysis (pairing gap visualization)
-RUN_FIG11_EXPERIMENTS = False
-RUN_PARETO_ANALYSIS = True
+RUN_FIG11_EXPERIMENTS = os.getenv("RUN_FIG11_EXPERIMENTS", "0").lower() in ("1", "true", "yes", "on")
+RUN_PARETO_ANALYSIS = os.getenv("RUN_PARETO_ANALYSIS", "1").lower() in ("1", "true", "yes", "on")
 PARETO_UTIL = 60
 PARETO_LAYOUT_MODE = "qos"  # "baseline" or "qos"
 PARETO_SHOW_ALL = True
@@ -241,11 +243,39 @@ class MultiprogrammingSimulator:
 
     def __init__(self):
         self.backend = FakeKolkataV2()
+        self._ensure_estimator_backend_compat(self.backend)
         self.noise_model = create_noise_model()
         self.simulator = AerSimulator(noise_model=self.noise_model, method='automatic')
         self.n_qubits = self.backend.num_qubits  # 27
         self.target = self.backend.target
         self.coupling_map = self.backend.coupling_map
+        self.multiprogrammer = Multiprogrammer()
+        self.estimator = None
+        if QOS_LAYOUT_MODE == "estimator_process":
+            try:
+                from qos.estimator.estimator import Estimator
+            except Exception as exc:
+                raise RuntimeError(
+                    "QOS_LAYOUT_MODE=estimator_process requires qos.estimator and its runtime "
+                    f"dependencies to import cleanly. Original error: {exc}"
+                ) from exc
+            self.estimator = Estimator(qpus=[self.backend], model_path=None)
+
+    def _ensure_estimator_backend_compat(self, backend) -> None:
+        """Patch a BackendV2 fake backend with minimal BackendV1-like config API."""
+        if hasattr(backend, "configuration"):
+            return
+        basis_gates = list(getattr(getattr(backend, "target", None), "operation_names", []) or [])
+        backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "backend")
+        config = SimpleNamespace(
+            basis_gates=basis_gates,
+            num_qubits=getattr(backend, "num_qubits", 0),
+            n_qubits=getattr(backend, "num_qubits", 0),
+            simulator=bool(getattr(backend, "simulator", False)),
+            coupling_map=getattr(backend, "coupling_map", None),
+            backend_name=backend_name,
+        )
+        backend.configuration = lambda: config
 
     def run_ideal(self, circuit: QuantumCircuit) -> Dict[str, int]:
         """Run circuit without noise to get ideal distribution."""
@@ -488,12 +518,41 @@ class MultiprogrammingSimulator:
             layout2 = list(range(n1, n1 + n2))
             return f1, f2, 0.0, layout1, layout2
 
-        # QOS: Find optimal layouts using error-aware selection
-        layout1 = self._find_good_layout(circ1)
-        layout2 = self._find_non_overlapping_layout(circ2, layout1)
+        if QOS_LAYOUT_MODE == "estimator_process":
+            qernel1 = Qernel(circ1)
+            qernel2 = Qernel(circ2)
+            BasicAnalysisPass().run(qernel1)
+            BasicAnalysisPass().run(qernel2)
+            SupermarqFeaturesAnalysisPass().run(qernel1)
+            SupermarqFeaturesAnalysisPass().run(qernel2)
 
-        if layout2 is None:
-            return self.run_baseline_mp(circ1, circ2)
+            layout1 = self._get_estimated_layout(qernel1)
+            layout2 = self._get_estimated_layout(qernel2)
+
+            qernel_dict = {
+                qernel1: [(layout1, self.backend, 1.0)],
+                qernel2: [(layout2, self.backend, 1.0)],
+            }
+            print("      [QOS] Running multiprogrammer.process_qernels...", flush=True)
+            overlap_before = check_layout_overlap(layout1, layout2)
+            _ = self.multiprogrammer.process_qernels(
+                qernel_dict,
+                threshold=0.0,
+                dry_run=overlap_before,
+            )
+
+            if overlap_before:
+                layout2 = self._find_non_overlapping_layout(circ2, layout1)
+
+            if layout2 is None:
+                return self.run_baseline_mp(circ1, circ2)
+        else:
+        # QOS: Find optimal layouts using error-aware selection
+            layout1 = self._find_good_layout(circ1)
+            layout2 = self._find_non_overlapping_layout(circ2, layout1)
+
+            if layout2 is None:
+                return self.run_baseline_mp(circ1, circ2)
 
         ideal1 = self.run_ideal(circ1)
         ideal2 = self.run_ideal(circ2)
@@ -517,6 +576,14 @@ class MultiprogrammingSimulator:
         eff_util = compute_effective_utilization(circ1, circ2, self.backend)
 
         return f1, f2, eff_util, layout1, layout2
+
+    def _get_estimated_layout(self, qernel: Qernel) -> List[int]:
+        if self.estimator is None:
+            return list(range(qernel.get_circuit().num_qubits))
+        layouts = self.estimator.run(qernel, successors=True)
+        if not layouts:
+            return list(range(qernel.get_circuit().num_qubits))
+        return list(layouts[0][0])
 
 
 # ============================================================================
@@ -605,6 +672,33 @@ def select_baseline_pairs(benchmarks: Dict, target_qubits: int,
     candidates = generate_candidate_pairs(benchmarks, target_qubits)
     if not candidates:
         return []
+
+    if BASELINE_PAIRING_MODE == "mp_score" and backend is not None:
+        mp = Multiprogrammer()
+        analyser = SupermarqFeaturesAnalysisPass()
+        qernel_cache = {}
+
+        def get_qernel(circ: QuantumCircuit, label: str) -> Qernel:
+            q = qernel_cache.get(label)
+            if q is None:
+                q = Qernel(circ)
+                analyser.run(q)
+                qernel_cache[label] = q
+            return q
+
+        scored = []
+        for circ1, circ2, name1, name2 in candidates:
+            try:
+                q1 = get_qernel(circ1, name1)
+                q2 = get_qernel(circ2, name2)
+                score = mp.get_matching_score(q1, q2, backend)
+                scored.append((score, (circ1, circ2, name1, name2)))
+            except Exception as exc:
+                print(f"[WARN] Baseline mp_score failed for {name1}+{name2}: {exc}", flush=True)
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if n_pairs is None:
+            return [pair for _, pair in scored]
+        return [pair for _, pair in scored[:n_pairs]]
 
     if BASELINE_PAIRING_MODE == "ranked" and backend is not None:
         try:

@@ -877,19 +877,18 @@ def _evaluate_active_task(candidate_kind: str | None,
             col for col in _PAIR_METADATA_COLUMNS
             if col in base_cols or col.startswith("m1_") or col.startswith("m2_")
         ]
-        header = kept_cols + ["pareto_rank", "score"]
+        header = kept_cols + ["pareto_rank", "score", "selected_rank"]
         top_rank_pairs_lines.append(",".join(header))
-        rank_cutoff = effective_top_k
-        for i, rnk in enumerate(_PAIR_RANKS):
-            if rnk > rank_cutoff:
-                continue
+        top_idx_sorted = sorted(top_idx, key=lambda i: scores[i], reverse=True)
+        for selected_rank, i in enumerate(top_idx_sorted, start=1):
             _c1, _c2, n1, n2 = _CANDIDATES[i]
             key = f"{n1}+{n2}"
             row = _PAIR_METADATA.get(key)
             if not row:
                 continue
+            rnk = _PAIR_RANKS[i]
             values = [_fmt_cell(row.get(col, "")) for col in kept_cols]
-            values += [str(rnk), _fmt4(scores[i])]
+            values += [str(rnk), _fmt4(scores[i]), str(selected_rank)]
             top_rank_pairs_lines.append(",".join(values))
     top_rank_pairs_csv = "\n".join(top_rank_pairs_lines)
 

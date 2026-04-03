@@ -73,7 +73,9 @@ def _env_bool(name: str, default: bool) -> bool:
 # TARGET_UTIL = 30
 TARGET_UTIL = 60
 # TARGET_UTIL = 88
+# Fallback only when OE_TOP_K_RATIO is disabled (<=0).
 TOP_K = 32
+# The launcher should set OE_TOP_K_RATIO explicitly for each experiment.
 TOP_K_RATIO = _env_float("OE_TOP_K_RATIO", 0.0)
 # Always evaluate on the full candidate pool.
 CANDIDATE_LIMIT = None
@@ -102,7 +104,7 @@ EVAL_MODE = "candidate"  # "candidate", "original", "both"
 # - OE_EVAL_UTILS: utils list, e.g. 30,60,88 (also accepts 30:60:88 / 30 60 88)
 # - OE_EVAL_SHOTS: integer shots used for all eval utils
 # - OE_RESTRICT_TO_PAIR_CSV: 1/0, evaluate only pairs existing in pair_metrics csv
-# - OE_TOP_K_RATIO: Top-K ratio (0.1 or 10 both mean 10%; <=0 disables ratio mode)
+# - OE_TOP_K_RATIO: Top-K ratio (0.1 or 10 both mean 10%; <=0 falls back to TOP_K)
 # - OE_MULTI_UTIL_AGG: mean | norm_to_baseline
 # - OE_PARETO_SECOND_METRIC: fidelity | proxy
 # - OE_PROXY_FEATURES: candidate proxy features (comma/space separated)

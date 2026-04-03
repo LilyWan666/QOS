@@ -10,7 +10,7 @@ import logging
 from qiskit.converters import circuit_to_dag
 from qiskit.providers.fake_provider import *
 from qiskit.compiler import transpile
-from qos.time_estimator.basic_estimator import CircuitEstimator
+from qos.scheduler.time_estimator.basic_estimator import CircuitEstimator
 #from settings.ibm_token import IBM_TOKEN
 import pickle
 

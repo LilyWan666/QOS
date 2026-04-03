@@ -20,8 +20,8 @@ from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 
-from qos.time_estimator.base_estimator import BaseEstimator
-from qos.time_estimator.database import extract_jobs_from_ibm_quantum
+from qos.scheduler.time_estimator.base_estimator import BaseEstimator
+from qos.scheduler.time_estimator.database import extract_jobs_from_ibm_quantum
 
 logger = logging.getLogger(__name__)
 
