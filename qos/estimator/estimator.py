@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import List
 import logging
 from random import choice
 import pickle
@@ -6,16 +6,11 @@ import joblib
 
 from qos.types.types import Engine, Qernel
 import qos.database as db
-try:
-    from data.ibm_token import IBM_TOKEN
-except Exception:
-    IBM_TOKEN = None
+from data.ibm_token import IBM_TOKEN
 
 from qiskit_ibm_runtime.fake_provider import *
-try:
-    from qiskit_ibm_provider import IBMProvider
-except Exception:
-    IBMProvider = None
+from qiskit_ibm_provider import IBMProvider
+from qiskit_ibm_runtime.models import BackendProperties
 from qiskit import transpile, QuantumCircuit
 
 import mapomatic as mm
@@ -80,16 +75,13 @@ class Estimator(Engine):
     _qpu_properties = {}
     
 
-    def __init__(self, qpus: list = None, model_path: Optional[str] = "qos/estimator") -> None:
-        self.model = None
-        if model_path:
-            try:
-                self.model = joblib.load(model_path)  # scikit-learn model
-            except Exception as exc:
-                print(f"[WARN] Estimator model load failed: {exc}")
+    def __init__(self, qpus: list = None, model_path: str = "qos/estimator") -> None:
+        max_qpu_id = 0
+
+        max_qpu_id = db.getLastQPUid()
+        self.model = joblib.load(model_path)  # scikit-learn model
 
         if qpus == None:
-            max_qpu_id = db.getLastQPUid()
             for i in range(1, max_qpu_id + 1):
                 qpu_name = db.getQPU(i).name
                 qpu_alias = db.getQPU(i).alias
@@ -118,25 +110,20 @@ class Estimator(Engine):
                 self._qpus.append(backend)
         else:
             for q in qpus:
-                q_name = q.name() if callable(getattr(q, "name", None)) else getattr(q, "name", str(q))
                 self._qpus.append(q)
-                self._qpu_properties[q_name] = {}
-                self._qpu_properties[q_name]["medianReadoutError"] = self.getMedianReadoutError(q)
+                self._qpu_properties[q.name] = {}
+                self._qpu_properties[q.name]["medianReadoutError"] = self.getMedianReadoutError(q)
 
                 non_local_gate_error = []
-                basis_gates = list(getattr(getattr(q, "target", None), "operation_names", []) or [])
-                if not basis_gates:
-                    basis_gates = q.configuration().basis_gates
+                basis_gates = q.configuration().basis_gates                
                 for g in basis_gates:
-                    if g not in gates:
-                        continue
-                    self._qpu_properties[q_name][g] = self.getMedianGateError(q, g)
+                    self._qpu_properties[q.name][g] = self.getMedianGateError(q, g)
                     if gates[g] == 2:
-                        non_local_gate_error .append(self._qpu_properties[q_name][g])
+                        non_local_gate_error .append(self._qpu_properties[q.name][g])
 
-                self._qpu_properties[q_name]["medianNonLocalError"] = np.median(non_local_gate_error)
-                self._qpu_properties[q_name]["medianT1"] = self.getMedianT1(q)
-                self._qpu_properties[q_name]["medianT2"] = self.getMedianT2(q)
+                self._qpu_properties[q.name]["medianNonLocalError"] = np.median(non_local_gate_error)
+                self._qpu_properties[q.name]["medianT1"] = self.getMedianT1(q)
+                self._qpu_properties[q.name]["medianT2"] = self.getMedianT2(q)
 
             best_readout = 1
             best_T2 = 0
@@ -172,22 +159,11 @@ class Estimator(Engine):
             print(best_overall_machine)
 
     def getMedianReadoutError(self, backend):
+        props = backend.properties()
         readouts = []
-        num_qubits = getattr(backend, "num_qubits", None)
-        if num_qubits is None:
-            num_qubits = backend.configuration().n_qubits
 
-        if hasattr(backend, "properties"):
-            props = backend.properties()
-            for i in range(num_qubits):
-                readouts.append(props.readout_error(i))
-        else:
-            measure_props = backend.target.get("measure", None)
-            for i in range(num_qubits):
-                try:
-                    readouts.append((measure_props[(i,)].error or 0.0))
-                except Exception:
-                    readouts.append(0.0)
+        for i in range(backend.configuration().n_qubits):
+            readouts.append(props.readout_error(i))
 
         return np.median(readouts)
     
@@ -200,105 +176,75 @@ class Estimator(Engine):
         return None
 
     def getMedianGateError(self, backend, gate):
-        coupling_map = getattr(backend, "coupling_map", None)
-        if coupling_map is None:
-            coupling_map = backend.configuration().coupling_map
-        num_qubits = getattr(backend, "num_qubits", None)
-        if num_qubits is None:
-            num_qubits = backend.configuration().n_qubits
-        qubits = [i for i in range(num_qubits)]
+        props:BackendProperties = backend.properties()
+        coupling_map = backend.configuration().coupling_map
+        qubits = [i for i in range(backend.configuration().n_qubits)]
         errors = []
 
         if gate == "reset":
             return 0.0
 
-        if hasattr(backend, "properties"):
-            props: Any = backend.properties()
-            if gates[gate] == 1:
-                for q in qubits:
-                    errors.append(props.gate_error(gate, q))
-            else:
-                for pair in coupling_map:
-                    try:
-                        errors.append(props.gate_error(gate, pair))
-                    except:
-                        errors.append(props.gate_error(gate, choice(list(props._gates[gate].keys()))))
+        if gates[gate] == 1:
+            for q in qubits:
+                errors.append(props.gate_error(gate, q))
         else:
-            inst_props = backend.target.get(gate, None)
-            if not inst_props:
-                return 0.0
-            if gates[gate] == 1:
-                for q in qubits:
-                    try:
-                        errors.append((inst_props[(q,)].error or 0.0))
-                    except Exception:
-                        continue
-            else:
-                for pair in coupling_map:
-                    key = tuple(pair)
-                    try:
-                        errors.append((inst_props[key].error or 0.0))
-                    except Exception:
-                        continue
+            for pair in coupling_map:
+                try:
+                    errors.append(props.gate_error(gate, pair))
+                except:
+                    # If the qubit pair is not available for on the simplified pair list for this gate, we take a random one
+                    errors.append(props.gate_error(gate, choice(list(props._gates[gate].keys()))))
 
         return np.median(errors)
     
 
     def getMedianT1(self, backend):
-        num_qubits = getattr(backend, "num_qubits", None)
-        if num_qubits is None:
-            num_qubits = backend.configuration().num_qubits
+        props = backend.properties()
+        num_qubits = backend.configuration().num_qubits
 
         t1s = []
         average_t1 = 0
 
         for qq in range(num_qubits):
+           
             try:
-                if hasattr(backend, "properties"):
-                    t1 = backend.properties().qubit_property(qq, "T1")[0]
-                else:
-                    t1 = backend.qubit_properties(qq).t1
+                t1 = props.qubit_property(qq, "T1")[0]
                 t1s.append(t1)
                 average_t1 = average_t1 + t1
             except:
-                t1s.append(average_t1 / len(t1s) if t1s else 0.0)
+                t1s.append(average_t1 / len(t1s))
 
         return np.median(t1s)
 
     def getMedianT2(self, backend):
-        num_qubits = getattr(backend, "num_qubits", None)
-        if num_qubits is None:
-            num_qubits = backend.configuration().num_qubits
+        props = backend.properties()
+        num_qubits = backend.configuration().num_qubits
 
         t2s = []
         average_t2 = 0
 
         for qq in range(num_qubits):
             try:
-                if hasattr(backend, "properties"):
-                    t2 = backend.properties().qubit_property(qq, "T2")[0]
-                else:
-                    t2 = backend.qubit_properties(qq).t2
+                t2 = props.qubit_property(qq, "T2")[0]
                 t2s.append(t2)
                 average_t2 = average_t2 + t2
             except:
-                t2s.append(average_t2 / len(t2s) if t2s else 0.0)
+                t2s.append(average_t2 / len(t2s))
 
         return np.median(t2s)
 
     def trivialConstFunction(self, circuit: QuantumCircuit, layouts, backend):
         fid = 1.0
         error = 0
-        backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "unknown")
 
         for key, value in circuit.count_ops().items():
             if key == "measure" or key == "barrier":
                 continue
             for v in range(value):
-                fid *= 1 - self._qpu_properties[backend_name][key]
+                fid *= 1 - self._qpu_properties[backend.name()][key]
 
         for i in range(circuit.num_qubits):
-            fid *= 1 - self._qpu_properties[backend_name]["medianReadoutError"]
+            fid *= 1 - self._qpu_properties[backend.name()]["medianReadoutError"]
 
         error = 1 - fid
 
@@ -308,9 +254,7 @@ class Estimator(Engine):
         out = []
         props = backend.properties()
         dt = backend.configuration().dt
-        num_qubits = getattr(backend, "num_qubits", None)
-        if num_qubits is None:
-            num_qubits = backend.configuration().num_qubits
+        num_qubits = backend.configuration().num_qubits
 
         t1s = []
         t2s = []
@@ -430,6 +374,8 @@ class Estimator(Engine):
         best_out = []
 
         for backend in backends:
+            config = backend.configuration()
+
             try:
                 trans_qc_list = transpile([circuit]*20, backend, optimization_level=3)
                 best_cx_count = [circ.num_nonlocal_gates() for circ in trans_qc_list]
@@ -437,27 +383,17 @@ class Estimator(Engine):
                 trans_qc = trans_qc_list[best_idx]
 
             except NameError as e:
-                backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "unknown")
-                print("[ERROR] - Can't transpile circuit on backend {}".format(backend_name))
+                print("[ERROR] - Can't transpile circuit on backend {}".format(backend.name()))
                 return 1
 
             circ = mm.deflate_circuit(trans_qc)
             circ_qubits = circ.num_qubits
             circuit_gates = set(circ.count_ops()).difference({'barrier', 'reset', 'measure'})
-            basis_gates = set(getattr(getattr(backend, "target", None), "operation_names", []) or [])
-            if not basis_gates:
-                basis_gates = set(backend.configuration().basis_gates)
-            if not circuit_gates.issubset(basis_gates):
+            if not circuit_gates.issubset(backend.configuration().basis_gates):
                 continue
-            num_qubits = getattr(backend, "num_qubits", None)
-            if num_qubits is None:
-                num_qubits = backend.configuration().num_qubits
-            simulator = bool(getattr(backend, "simulator", False))
-            coupling_map = getattr(backend, "coupling_map", None)
-            if coupling_map is None:
-                coupling_map = backend.configuration().coupling_map
-            if not simulator and circ_qubits <= num_qubits:
-                layouts = mply.matching_layouts(circ, coupling_map, call_limit=int(1e3))
+            num_qubits = config.num_qubits
+            if not config.simulator and circ_qubits <= num_qubits:
+                layouts = mply.matching_layouts(circ, config.coupling_map, call_limit=int(1e3))
                 layout_and_error = mply.evaluate_layouts(circ, layouts, backend,
                                                     cost_function=cost_function)
                 if any(layout_and_error):
@@ -465,8 +401,7 @@ class Estimator(Engine):
                         if len(l[0]) == circuit.num_qubits:
                             layout = l[0]
                             error = l[1]
-                            backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "unknown")
-                            best_out.append((layout, backend_name, error))
+                            best_out.append((layout, config.backend_name, error))
                             break                    
         best_out.sort(key=lambda x: x[2])
         if successors:
@@ -490,15 +425,13 @@ class Estimator(Engine):
         try:
             trans_qc27 = transpile(circuit, backend, optimization_level=3)
         except NameError as e:
-            backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "unknown")
-            print("[ERROR] - Can't transpile circuit on backend {}".format(backend_name))
+            print("[ERROR] - Can't transpile circuit on backend {}".format(backend.name()))
             return 1
 
         try:
             trans_qc127 = transpile(circuit, backend, optimization_level=3)
         except NameError as e:
-            backend_name = backend.name() if callable(getattr(backend, "name", None)) else getattr(backend, "name", "unknown")
-            print("[ERROR] - Can't transpile circuit on backend {}".format(backend_name))
+            print("[ERROR] - Can't transpile circuit on backend {}".format(backend.name()))
             return 1
 
         circ27 = mm.deflate_circuit(trans_qc27)
@@ -532,15 +465,5 @@ class Estimator(Engine):
             return best_out[0]
         return best_out
 
-    def run(self, qernel: Qernel, successors=True, cost_function=None):
-        if cost_function is None:
-            cost_function = self.trivialConstFunction
-        return self.best_overall_layoutv2(
-            qernel.circuit,
-            self._qpus,
-            successors=successors,
-            cost_function=cost_function,
-        )
-
-    def results(self):
-        return None
+    def run(self, qernel: Qernel, successors=True, cost_function=trivialConstFunction):
+        return self.best_overall_layoutv2(qernel.circuit, successors=successors, cost_function=cost_function)

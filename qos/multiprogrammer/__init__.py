@@ -1,1 +1,0 @@
-"""QOS multiprogrammer package."""

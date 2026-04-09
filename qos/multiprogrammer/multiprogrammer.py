@@ -1,9 +1,12 @@
 from qos.types.types import Engine
 from typing import Any, Dict, List, Tuple
+import qos.database as db
 from qos.types.types import Qernel
 import logging
+from qos.multiprogrammer.tools import check_layout_overlap, size_overflow, bundle_qernels
 from time import sleep
 from qos.types.types import QPU
+from qos.estimator.estimator import Estimator
 import numpy as np
 from mapomatic import layouts
 
@@ -20,10 +23,8 @@ class Multiprogrammer(Engine):
         self.done_queue = []
 
     def spatial_utilization(self, q1: Qernel, q2: Qernel, backend: QPU) -> float:
-        circ1 = q1.get_circuit()
-        circ2 = q2.get_circuit()
-        util1 = circ1.num_qubits / backend.num_qubits
-        util2 = circ2.num_qubits / backend.num_qubits
+        util1 = q1.num_qubits() / backend.num_qubits
+        util2 = q2.num_qubits() / backend.num_qubits
 
         return util1 + util2
 
@@ -43,34 +44,30 @@ class Multiprogrammer(Engine):
                    spatial utilization and temporal utilization, expressed as a percentage.
 
         Notes:
-            - Spatial utilization is determined by the Qernel with the maximum
-              depth (D_max) relative to the total number of qubits available on
-              the backend.
-            - Temporal utilization accounts for the shorter-depth Qernel,
-              weighted by the ratio of its depth to D_max.
+            - Spatial utilization is determined by the Qernel with the maximum 
+              allocated qubits (C_max) relative to the total number of qubits 
+              available on the backend.
+            - Temporal utilization is a weighted sum of the spatial usage of 
+              each Qernel, where the weight is proportional to the depth of the 
+              Qernel relative to the maximum depth (D_max) among the Qernels.
         """
-        # Find the Qernel with the maximum depth (D_max)
-        circ1 = q1.get_circuit()
-        circ2 = q2.get_circuit()
-        D1 = circ1.depth()
-        D2 = circ2.depth()
-        D_max = max((D1, D2))
+         # Find the Qernel with the maximum depth (D_max)
+        D_max = max((q1.depth(), q2.depth()))
 
-        # Spatial utilization (from the circuit with maximum depth)
-        if D1 >= D2:
-            C_max = circ1.num_qubits
-            C_other, D_other = circ2.num_qubits, D2
-        else:
-            C_max = circ2.num_qubits
-            C_other, D_other = circ1.num_qubits, D1
+        # Find the Qernel with the maximum allocated qubits (C_max)
+        C_max = max((q1.num_qubits(), q2.depth()))
 
+        # Spatial utilization (from the Qernel with C_max)
         spatial_util = (C_max / backend.num_qubits) * 100
 
-        # Temporal utilization (from shorter circuits, weighted by depth ratio)
-        if D_max > 0:
-            temporal_util = (D_other / D_max) * (C_other / backend.num_qubits) * 100
-        else:
-            temporal_util = 0.0
+        # Temporal utilization (weighted sum of spatial usage)
+        temporal_util = 0.0
+        qernels = [q1, q2]
+        for q in qernels:
+            D_k = q.depth()
+            C_k = q.num_qubits
+            weight = D_k / D_max
+            temporal_util += weight * (C_k / backend.num_qubits) * 100
 
         # Total effective utilization
         u_eff = spatial_util + temporal_util
@@ -143,41 +140,25 @@ class Multiprogrammer(Engine):
 
         return parallelism_result
 
-    def process_qernels(
-        self,
-        qernel_dict: Dict[Qernel, List[Tuple[List[int], Any, float]]],
-        threshold: float,
-        dry_run: bool = False,
-        pair_filter: Any = None,
-        return_ranked: bool = False,
-    ):
+    def process_qernels(self, qernel_dict: Dict[Qernel, List[Tuple[List[int], str, float]]], threshold: float):
         """
         Processes a dictionary of Qernels to compute spatial utilization and matching scores 
         for pairs of Qernels using the same backend. Filters and evaluates pairs based on 
         utilization, matching score, and layout overlap.
 
         Args:
-            qernel_dict (Dict[Qernel, List[Tuple[List[int], Any, float]]]):
+            qernel_dict (Dict[Qernel, List[Tuple[List[int], str, float]]]): 
                 A dictionary where keys are Qernel objects and values are lists of tuples. 
                 Each tuple contains:
                     - A list of integers representing the layout.
-                    - A backend object (e.g., FakeKolkataV2).
+                    - A string representing the backend.
                     - A float representing the estimated fidelity.
             threshold (float): 
                 The minimum matching score required to process a pair of Qernels.
-            dry_run (bool):
-                If True, return the selected pair metadata without invoking policies.
-            pair_filter (callable | None):
-                Optional predicate to filter candidate pairs. Signature:
-                (q1, q2, layout1, layout2, backend) -> bool
-            return_ranked (bool):
-                If True, return all candidate pairs that pass the threshold,
-                ordered by spatial utilization (descending).
 
         Returns:
-            Qernel | tuple | list | None:
-                The bundled Qernel, the selected pair metadata when dry_run=True,
-                or a ranked list of pair metadata when return_ranked=True.
+            None: 
+                The bundled Qernel.
 
         Behavior:
             - Computes spatial utilization for pairs of Qernels using the same backend.
@@ -189,15 +170,6 @@ class Multiprogrammer(Engine):
                 - Calls `re_evaluation_policy()` if layouts overlap.
         """
         results = []
-        selected_qernel = None
-        selected_pair = None
-        ranked_pairs = []
-
-        def check_layout_overlap(layout1: List[int], layout2: List[int]) -> bool:
-            for q in layout1:
-                if q in layout2:
-                    return True
-            return False
 
         # Iterate over the dictionary to compute spatial utilization for each pair with the same backend
         for q1, q1_data in qernel_dict.items():
@@ -209,9 +181,6 @@ class Multiprogrammer(Engine):
                 for layout1, backend1, _ in q1_data:
                     for layout2, backend2, _ in q2_data:
                         if backend1 == backend2:
-                            if pair_filter and not pair_filter(q1, q2, layout1, layout2, backend1):
-                                continue
-
                             # Compute spatial utilization
                             spatial_util = self.spatial_utilization(q1, q2, backend1)
 
@@ -229,28 +198,13 @@ class Multiprogrammer(Engine):
 
             # Check if the matching score is over the threshold
             if matching_score > threshold:
-                if return_ranked:
-                    ranked_pairs.append(
-                        (q1, q2, layout1, layout2, matching_score, spatial_util, backend)
-                    )
-                    continue
-                if dry_run:
-                    selected_pair = (q1, q2, layout1, layout2, matching_score, spatial_util, backend)
-                    break
                 # Check if the layouts have common elements
                 if not check_layout_overlap(layout1, layout2):
-                    selected_qernel = self.restrict_policy([q1, q2], error_limit=threshold)
+                    qernel = self.restrict_policy()
                 else:
-                    selected_qernel = self.re_evaluation_policy(q1, q2)
-                if selected_qernel is not None:
-                    break
+                    qernel = self.re_evaluation_policy()
 
-        if return_ranked:
-            ranked_pairs.sort(key=lambda x: (x[4], x[5]), reverse=True)
-            return ranked_pairs
-        if dry_run:
-            return selected_pair
-        return selected_qernel
+        return qernel
 
     def run(self, qernels: List[Qernel]) -> List[Qernel]:
 
@@ -271,8 +225,6 @@ class Multiprogrammer(Engine):
     #   2. The new circuits left are G and H, move the window by two circuits, this is because the new circuits need to enter the window and the size of the window is fixed
     
     def restrict_policy(self, new_qernels: Qernel | List[Qernel] , error_limit: float, matching_cycles=1, max_bundle=2) -> None:
-        from qos.multiprogrammer.tools import check_layout_overlap, size_overflow, bundle_qernels
-
         # This is whole algorithm is very very unclean, but it works for now
         # This compares matching 0 of the incoming qernel with matching 0 of a qernel on the queue, the 1 to 0 then 0 to 1 and so on
         cycles = [(0,0), (1,0), (0,1), (1,1), (2,0), (0,2), (2,1), (1,2), (2,2), (3,0), (0,3), (3,1), (1,3), (3,2), (2,3), (3,3)]
@@ -329,9 +281,6 @@ class Multiprogrammer(Engine):
         return 0
 
     def re_evaluation_policy(self, qernel1: Qernel, qernel2, successors=False) -> Qernel:
-        from qos.multiprogrammer.tools import bundle_qernels
-        from qos.estimator.estimator import Estimator
-
         bundled_qernel = bundle_qernels(qernel1, qernel2, (0,0))
 
         estimator = Estimator()
@@ -341,9 +290,6 @@ class Multiprogrammer(Engine):
         return result
 
     def _base_policy(self, newQernel: Qernel, error_limit: float) -> None:
-        import qos.database as db
-        from qos.multiprogrammer.tools import check_layout_overlap
-
         # self.logger.log(10, "Running Base policy")
 
         logger = logging.getLogger(__name__)

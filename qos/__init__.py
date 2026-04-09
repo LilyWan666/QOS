@@ -1,1 +1,0 @@
-"""QOS package root."""
