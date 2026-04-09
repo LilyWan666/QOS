@@ -43,3 +43,6 @@ temp/qos_seed_vs_target/
 temp/qos_seed_vs_target_physical/
 ibm_quantum/
 temp/=*
+temp/agent_target_search/
+
+evaluation/agent_target_search/*

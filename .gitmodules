@@ -1,0 +1,3 @@
+[submodule "claw-code"]
+	path = claw-code
+	url = https://github.com/LilyWan666/claw-code.git
