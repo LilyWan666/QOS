@@ -56,3 +56,5 @@ controller_envs/
 .repro_generated/
 
 evaluation/agent_target_search/*
+
+rust/temp/
