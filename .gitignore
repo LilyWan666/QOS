@@ -48,6 +48,7 @@ ibm_quantum/
 .claw/sessions/
 .codex_write_test
 /temp/
+/src/
 .venv/
 venv/
 env/
