@@ -1,0 +1,49 @@
+{
+  "name": "qos_import_smoke_example",
+  "description": "QOS-specific example recipe built on the generic agent framework reproduce workflow.",
+  "workspace_root": ".",
+  "runtime": {
+    "constraints_file": "evaluation/agent_framework/reproduce/env/constraints_qiskit_legacy.txt"
+  },
+  "entry": {
+    "kind": "command",
+    "command": [
+      "{python_executable}",
+      "evaluation/agent_framework/reproduce/harnesses/python_import_smoke.py",
+      "--metrics-path",
+      "{metrics_path}",
+      "--modules-json",
+      "[\"qos.types.types\", \"qos.multiprogrammer.multiprogrammer\", \"qos.estimator.estimator\"]"
+    ],
+    "timeout_seconds": 120
+  },
+  "preflight": {
+    "commands_exist": [
+      "python"
+    ],
+    "paths_exist": [
+      "qos",
+      "qos/multiprogrammer/multiprogrammer.py",
+      "qos/types/types.py"
+    ],
+    "python_imports": [
+      "qiskit",
+      "qiskit_ibm_runtime",
+      "qiskit_ibm_provider"
+    ]
+  },
+  "parsing": {
+    "kind": "json_file",
+    "path": "{metrics_path}",
+    "required_metric_keys": [
+      "success",
+      "python_version",
+      "checked_modules"
+    ]
+  },
+  "success_criteria": {
+    "require_exit_code_zero": true,
+    "require_metrics": true,
+    "require_metric_success": true
+  }
+}

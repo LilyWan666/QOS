@@ -14,6 +14,9 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+*.out
+*.err
+slurm-*.out
 evaluation/openevolve_pairing/pairing_metadata/
 evaluation/openevolve_pairing/*pairing_compare_*.png
 evaluation/openevolve_pairing/test_corr*.txt
@@ -39,10 +42,17 @@ evaluation/openevolve_pairing/.tmp_*.env
 evaluation/openevolve_pairing/plot_qos_vs_target_physical*.env
 evaluation/openevolve_pairing/run_vllm_openevolve_qwen3_14b_awq.slurm
 evaluation/openevolve_pairing/figures/*
-temp/qos_seed_vs_target/
-temp/qos_seed_vs_target_physical/
 ibm_quantum/
-temp/=*
-temp/agent_target_search/
+
+# ---- local agent / reproduce runtime artifacts ----
+.claw/sessions/
+.codex_write_test
+/temp/
+.venv/
+venv/
+env/
+runtime_venvs/
+controller_envs/
+.repro_generated/
 
 evaluation/agent_target_search/*

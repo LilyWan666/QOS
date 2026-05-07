@@ -1,0 +1,112 @@
+{
+  "name": "qos_fig11_agent_autorun",
+  "description": "Agent-authored Figure 11 reproduction recipe seed. The agent should rewrite this recipe based on paper context and repo hints.",
+  "workspace_root": ".",
+  "paper": {
+    "documents": [
+      {
+        "label": "qos_main_paper",
+        "path": "paper/qos.pdf"
+      }
+    ],
+    "focus_terms": [
+      "figure 11",
+      "multiprogramming",
+      "no m/p",
+      "baseline",
+      "qos",
+      "effective utilization",
+      "relative fidelity"
+    ]
+  },
+  "recipe_authoring": {
+    "enabled": true,
+    "target_figure_id": "fig11",
+    "allowed_entrypoints": [
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_external.py",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_smoke.py"
+    ],
+    "blocked_entrypoints": [
+      "evaluation/benchmarks/circuits.py",
+      "evaluation/agent_framework/reproduce/harnesses/python_import_smoke.py"
+    ],
+    "required_methods": [
+      "no_multiprogramming",
+      "baseline_multiprogramming",
+      "qos_multiprogramming"
+    ],
+    "required_outputs": [
+      "figure_11a",
+      "figure_11b",
+      "figure_11c"
+    ],
+    "strict_paper_alignment": true
+  },
+  "entry": {
+    "kind": "command",
+    "command": [
+      "{python_executable}",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_smoke.py",
+      "--mode",
+      "external",
+      "--script-path",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_external.py",
+      "--metrics-path",
+      "{metrics_path}"
+    ],
+    "timeout_seconds": 180
+  },
+  "preflight": {
+    "commands_exist": [
+      "python"
+    ],
+    "paths_exist": [
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_smoke.py",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_external.py",
+      "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_smoke.contract.json",
+      "paper/qos.pdf",
+      "evaluation/benchmarks",
+      "qos/multiprogrammer/multiprogrammer.py"
+    ],
+    "python_imports": [
+      "qiskit",
+      "numpy"
+    ],
+    "optional_python_imports": [
+      "matplotlib"
+    ]
+  },
+  "parsing": {
+    "kind": "json_file",
+    "path": "{metrics_path}",
+    "required_metric_keys": [
+      "success",
+      "returncode",
+      "built_qernels",
+      "selected_pair",
+      "python_version"
+    ]
+  },
+  "success_criteria": {
+    "require_exit_code_zero": true,
+    "require_metrics": true,
+    "require_metric_success": true,
+    "require_verification_success": true
+  },
+  "verification": {
+    "enabled": true,
+    "kind": "figure_contract",
+    "contract_path": "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_smoke.contract.json",
+    "output_path": "{run_dir}/figure_verdict.json"
+  },
+  "recovery": {
+    "mode": "agent_guided",
+    "simulation_only": true,
+    "handlers": {}
+  },
+  "metadata": {
+    "seed_recipe": true,
+    "owner": "reproduce_agent",
+    "notes": "This seed recipe is expected to be rewritten by recipe_authoring before run."
+  }
+}

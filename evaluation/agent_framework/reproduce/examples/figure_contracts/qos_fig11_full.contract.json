@@ -1,0 +1,144 @@
+{
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "simulation_only",
+      "path": "simulation_only",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "three_thresholds",
+      "path": "threshold_count",
+      "type": "equals",
+      "value": 3
+    },
+    {
+      "id": "three_methods",
+      "path": "methods_count",
+      "type": "equals",
+      "value": 3
+    },
+    {
+      "id": "nine_applications",
+      "path": "application_count",
+      "type": "equals",
+      "value": 9
+    },
+    {
+      "id": "fig11c_has_27_application_bars",
+      "path": "relative_fidelity_application_count",
+      "type": "equals",
+      "value": 27
+    },
+    {
+      "id": "fig11c_first_application_exists",
+      "path": "relative_fidelity_by_application[0].application",
+      "type": "exists"
+    },
+    {
+      "id": "fig11c_first_relative_fidelity_numeric",
+      "path": "relative_fidelity_by_application[0].relative_fidelity",
+      "type": "numeric_between",
+      "min": 0.0,
+      "max": 1.2
+    },
+    {
+      "id": "has_no_mp",
+      "path": "methods_present.no_multiprogramming",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "has_baseline_mp",
+      "path": "methods_present.baseline_multiprogramming",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "has_qos_mp",
+      "path": "methods_present.qos_multiprogramming",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "figure_11a_exists",
+      "path": "output_files.figure_11a_exists",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "figure_11b_exists",
+      "path": "output_files.figure_11b_exists",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "figure_11c_exists",
+      "path": "output_files.figure_11c_exists",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "qos_beats_no_mp_fidelity",
+      "path": "summary.qos_vs_no_mp_avg_fidelity_improvement",
+      "type": "numeric_gte",
+      "value": 1.0
+    },
+    {
+      "id": "qos_beats_baseline_fidelity",
+      "path": "summary.qos_vs_baseline_avg_fidelity_improvement",
+      "type": "numeric_gte",
+      "value": 1.0
+    },
+    {
+      "id": "qos_effective_util_gain_nonnegative",
+      "path": "summary.qos_effective_util_gain_vs_baseline_pct",
+      "type": "numeric_gte",
+      "value": 0.0
+    },
+    {
+      "id": "relative_fidelity_loss_bounded",
+      "path": "summary.qos_avg_relative_fidelity_loss",
+      "type": "numeric_lte",
+      "value": 0.25
+    },
+    {
+      "id": "relative_fidelity_loss_increases_with_util",
+      "path": "summary.qos_relative_fidelity_losses",
+      "type": "monotonic_non_decreasing"
+    },
+    {
+      "id": "figure_11a_valid_png",
+      "path": "output_files.figure_11a_valid_png",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "figure_11b_valid_png",
+      "path": "output_files.figure_11b_valid_png",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "figure_11c_valid_png",
+      "path": "output_files.figure_11c_valid_png",
+      "type": "bool_equals",
+      "value": true
+    }
+  ],
+  "expected_trend": "QOS M/P should produce all three Fig. 11 outputs, cover all three methods and utilization thresholds, include nine benchmark applications and 27 per-application Fig. 11(c) bars, improve fidelity over the baselines, improve effective utilization over baseline M/P, and keep relative fidelity loss bounded.",
+  "figure_id": "qos_fig11_full",
+  "paper_claim": "Figure 11 compares No M/P, baseline M/P, and QOS M/P across 30%, 60%, and 88% utilization. Fig. 11(c) must be reproduced as per-application relative-fidelity bars for the nine benchmark applications under each utilization group, using simulation-only execution instead of real QPU access.",
+  "pass_rule": "all",
+  "tolerance": {
+    "avg_relative_fidelity_loss_max": 0.25,
+    "effective_util_gain_min_pct": 0.0,
+    "fidelity_improvement_min": 1.0
+  }
+}

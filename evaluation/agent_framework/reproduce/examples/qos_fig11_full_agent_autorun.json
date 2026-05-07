@@ -1,0 +1,117 @@
+{
+  "name": "qos_fig11_full_agent_autorun",
+  "description": "Paper-aligned Figure 11 reproduction recipe for the QOS multi-programmer, using simulation-only/offline backend modeling.",
+  "workspace_root": ".",
+  "paper": {
+    "documents": [
+      {"label": "qos_main_paper", "path": "paper/qos.pdf"}
+    ],
+    "focus_terms": [
+      "figure 11",
+      "multiprogramming",
+      "No M/P",
+      "Baseline M/P",
+      "QOS M/P",
+      "effective utilization",
+      "relative fidelity",
+      "30%",
+      "60%",
+      "88%"
+    ]
+  },
+  "recipe_authoring": {
+    "enabled": false,
+    "target_figure_id": "fig11",
+    "required_methods": [
+      "no_multiprogramming",
+      "baseline_multiprogramming",
+      "qos_multiprogramming"
+    ],
+    "required_outputs": [
+      "figure_11a",
+      "figure_11b",
+      "figure_11c"
+    ],
+    "strict_paper_alignment": true
+  },
+  "entry": {
+    "kind": "command",
+    "command": [
+      "{python_executable}",
+      "evaluation/agent_framework/reproduce/harnesses/run_qos_fig11_full.py",
+      "--metrics-path",
+      "{metrics_path}",
+      "--output-dir",
+      "{run_dir}/figures"
+    ],
+    "timeout_seconds": 240
+  },
+  "preflight": {
+    "commands_exist": ["python"],
+    "paths_exist": [
+      "evaluation/agent_framework/reproduce/harnesses/run_qos_fig11_full.py",
+      "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_full.contract.json",
+      "paper/qos.pdf",
+      "evaluation/benchmarks",
+      "qos/multiprogrammer/multiprogrammer.py",
+      "Baseline_Multiprogramming/multiprogramming.py"
+    ],
+    "python_imports": [],
+    "optional_python_imports": ["matplotlib"]
+  },
+  "parsing": {
+    "kind": "json_file",
+    "path": "{metrics_path}",
+    "required_metric_keys": [
+      "success",
+      "figure_id",
+      "threshold_count",
+      "methods_count",
+      "summary",
+      "output_files"
+    ]
+  },
+  "success_criteria": {
+    "require_exit_code_zero": true,
+    "require_metrics": true,
+    "require_metric_success": true,
+    "require_verification_success": true
+  },
+  "reproduction_requirements": {
+    "original_code_path_required": true,
+    "original_code_path": {
+      "min_original_modules": 2,
+      "forbidden_path_prefixes": [
+        "evaluation/agent_framework/reproduce/"
+      ],
+      "preferred_path_prefixes": [
+        "qos/",
+        "qvm/",
+        "Baseline_Multiprogramming/",
+        "evaluation/benchmarks/"
+      ],
+      "required_modules": [
+        "qos.multiprogrammer.multiprogrammer",
+        "Baseline_Multiprogramming.multiprogramming",
+        "evaluation.benchmarks.circuits",
+        "qvm"
+      ]
+    }
+  },
+  "verification": {
+    "enabled": true,
+    "kind": "figure_contract",
+    "contract_path": "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_full.contract.json",
+    "output_path": "{run_dir}/figure_verdict.json"
+  },
+  "recovery": {
+    "mode": "agent_guided",
+    "simulation_only": true,
+    "handlers": {}
+  },
+  "metadata": {
+    "seed_recipe": false,
+    "owner": "reproduce_agent",
+    "notes": "This recipe is paper-aligned but simulation-only. It avoids IBM/QPU access and checks structural Figure 11 claims."
+  }
+}

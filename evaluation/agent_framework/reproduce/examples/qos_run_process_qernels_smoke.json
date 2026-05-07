@@ -1,0 +1,121 @@
+{
+  "name": "qos_run_process_qernels_smoke",
+  "description": "Minimal QOS reproduce recipe that runs the process_qernels smoke harness and captures structured metrics.",
+  "workspace_root": ".",
+  "paper": {
+    "documents": [
+      {
+        "label": "qos_main_paper",
+        "path": "paper/qos.pdf"
+      }
+    ],
+    "focus_terms": [
+      "simulation",
+      "real quantum",
+      "benchmark",
+      "fidelity",
+      "utilization",
+      "waiting",
+      "scheduler",
+      "multiprogramming",
+      "error mitigation"
+    ]
+  },
+  "recipe_authoring": {
+    "enabled": true
+  },
+  "entry": {
+    "kind": "command",
+    "command": [
+      "{python_executable}",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_smoke.py",
+      "--mode",
+      "external",
+      "--script-path",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_external.py",
+      "--metrics-path",
+      "{metrics_path}"
+    ],
+    "timeout_seconds": 180
+  },
+  "preflight": {
+    "commands_exist": [
+      "python"
+    ],
+    "paths_exist": [
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_smoke.py",
+      "evaluation/agent_framework/reproduce/harnesses/run_process_qernels_external.py",
+      "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_smoke.contract.json",
+      "evaluation/benchmarks",
+      "qos/multiprogrammer/multiprogrammer.py"
+    ],
+    "python_imports": [
+      "qiskit",
+      "numpy"
+    ],
+    "optional_python_imports": [
+      "numpy"
+    ]
+  },
+  "parsing": {
+    "kind": "json_file",
+    "path": "{metrics_path}",
+    "required_metric_keys": [
+      "success",
+      "returncode",
+      "built_qernels",
+      "selected_pair",
+      "python_version"
+    ]
+  },
+  "success_criteria": {
+    "require_exit_code_zero": true,
+    "require_metrics": true,
+    "require_metric_success": true,
+    "require_verification_success": true
+  },
+  "verification": {
+    "enabled": true,
+    "kind": "figure_contract",
+    "contract_path": "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_smoke.contract.json",
+    "output_path": "{run_dir}/figure_verdict.json"
+  },
+  "recovery": {
+    "mode": "agent_guided",
+    "simulation_only": true,
+    "handlers": {
+      "patch_missing_module_file": {
+        "command": [
+          "{python_executable}",
+          "evaluation/agent_framework/reproduce/tools/recovery_patch_missing_module.py",
+          "--workspace-root",
+          "{workspace_root}",
+          "--module",
+          "{missing_module}",
+          "--result-path",
+          "{recovery_result_path}"
+        ],
+        "timeout_seconds": 60
+      },
+      "patch_missing_symbol_import": {
+        "command": [
+          "{python_executable}",
+          "evaluation/agent_framework/reproduce/tools/recovery_patch_missing_symbol_import.py",
+          "--workspace-root",
+          "{workspace_root}",
+          "--module",
+          "{from}",
+          "--symbol",
+          "{name}",
+          "--result-path",
+          "{recovery_result_path}"
+        ],
+        "timeout_seconds": 60
+      }
+    },
+    "optional_runtime_modules": [
+      "qiskit_ibm_provider",
+      "qiskit.providers.models"
+    ]
+  }
+}

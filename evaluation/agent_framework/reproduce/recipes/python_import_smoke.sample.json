@@ -1,0 +1,41 @@
+{
+  "name": "python_import_smoke_sample",
+  "description": "Repo-agnostic sample recipe that validates simple Python imports.",
+  "workspace_root": ".",
+  "entry": {
+    "kind": "command",
+    "command": [
+      "{python_executable}",
+      "evaluation/agent_framework/reproduce/harnesses/python_import_smoke.py",
+      "--metrics-path",
+      "{metrics_path}",
+      "--modules-json",
+      "[\"json\", \"pathlib\"]"
+    ],
+    "timeout_seconds": 60
+  },
+  "preflight": {
+    "commands_exist": [
+      "python"
+    ],
+    "paths_exist": [],
+    "python_imports": [
+      "json",
+      "pathlib"
+    ]
+  },
+  "parsing": {
+    "kind": "json_file",
+    "path": "{metrics_path}",
+    "required_metric_keys": [
+      "success",
+      "python_version",
+      "checked_modules"
+    ]
+  },
+  "success_criteria": {
+    "require_exit_code_zero": true,
+    "require_metrics": true,
+    "require_metric_success": true
+  }
+}

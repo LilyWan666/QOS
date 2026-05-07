@@ -1,0 +1,37 @@
+{
+  "figure_id": "qos_fig11_smoke",
+  "paper_claim": "The Figure 11 smoke workflow should build qernels and report pairing/utilization metrics with valid numeric values.",
+  "expected_trend": "qernels are generated and score/utilization metrics are present and non-negative.",
+  "tolerance": {
+    "matching_score_min": 0.0,
+    "spatial_util_range": [0.0, 1.0]
+  },
+  "checks": [
+    {
+      "id": "exit_code_zero",
+      "type": "equals",
+      "path": "returncode",
+      "value": 0
+    },
+    {
+      "id": "built_qernels_positive",
+      "type": "numeric_gte",
+      "path": "built_qernels",
+      "value": 1
+    },
+    {
+      "id": "matching_score_non_negative",
+      "type": "numeric_gte",
+      "path": "matching_score",
+      "value": 0.0
+    },
+    {
+      "id": "spatial_util_valid",
+      "type": "numeric_between",
+      "path": "spatial_util",
+      "min": 0.0,
+      "max": 1.0
+    }
+  ],
+  "pass_rule": "all"
+}
