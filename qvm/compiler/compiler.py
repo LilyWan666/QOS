@@ -1,7 +1,7 @@
 from qiskit.circuit import QuantumCircuit
 
-from qvm.virtual_circuit import VirtualCircuit
-from qvm.compiler.virtualization import (
+from qvm.qvm.virtual_circuit import VirtualCircuit
+from qvm.qvm.compiler.virtualization import (
     OptimalDecompositionPass,
     GreedyDependencyBreaker,
 )

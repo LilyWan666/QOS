@@ -3,10 +3,10 @@ from qos.error_mitigator.analyser import BasicAnalysisPass
 from qiskit import QuantumCircuit
 
 from qiskit_ibm_runtime import IBMBackend
-from qiskit.transpiler.passes import SabreSwap, SetLayout
-from qiskit.transpiler import PassManager, CouplingMap, Layout
+from qiskit.transpiler.passes import SabreSwap
+from qiskit.transpiler import PassManager
 from qiskit.transpiler.passes import ALAPSchedule
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 
 import networkx as nx
 
@@ -42,33 +42,46 @@ def get_all_backend_info(backend: IBMBackend) -> Dict[str, Any]:
 
     return backend_info
 
-def compute_qubit_utility(backend: IBMBackend) -> Dict[int, float]:
+def compute_qubit_utility(backend_properties: Dict[str, Any]) -> Dict[int, float]:
     """
     Compute the utility of each physical qubit on a QPU.
 
     Args:
-        backend (IBMBackend): The backend containing coupling map and error rates.
+        coupling_map (List[List[int]]): The coupling map of the QPU, where each entry is a pair of connected qubits.
+        backend_properties (BackendProperties): The backend properties containing error rates for the QPU.
 
     Returns:
         Dict[int, float]: A dictionary mapping each qubit to its computed utility value.
     """
+    # Initialize utility dictionary
     utility = {}
-    coupling_map = backend.coupling_map
-    props = backend.properties()
+    coupling_map = backend_properties['coupling_map']
 
-    for qubit in range(backend.num_qubits):
+    # Iterate over each qubit in the coupling map
+    for qubit in range(len(backend_properties.qubits)):
+        # Get the neighbors of the qubit from the coupling map
         neighbors = [pair[1] for pair in coupling_map if pair[0] == qubit] + \
                     [pair[0] for pair in coupling_map if pair[1] == qubit]
 
+        # Compute the number of links (degree of the qubit)
         num_links = len(neighbors)
+
+        # Compute the sum of error rates for the links
         error_sum = 0
         for neighbor in neighbors:
             try:
-                error_sum += props.gate_error('cx', [qubit, neighbor])
-            except Exception:
-                error_sum += 0.01
+                # Get the error rate for the link (CX gate error)
+                error_rate = backend_properties.gate_error('cx', [qubit, neighbor])
+                error_sum += error_rate
+            except:
+                # If no error rate is available, assume a default value
+                error_sum += 0.01  # Default error rate
 
-        utility[qubit] = num_links / error_sum if error_sum > 0 else 0
+        # Compute the utility for the qubit
+        if error_sum > 0:
+            utility[qubit] = num_links / error_sum
+        else:
+            utility[qubit] = 0  # Avoid division by zero
 
     return utility
 
@@ -148,8 +161,7 @@ def analyze_programs(programs: List[QuantumCircuit]) -> Dict[int, Dict[str, Any]
 
     return program_analysis
 
-def create_sub_graph(circuit: QuantumCircuit, coupling_map: List[List[int]],
-                     utility: Dict[int, float], cmr: float, alpha: float, beta: float) -> nx.Graph:
+def create_sub_graph(circuit: QuantumCircuit, utility: dict, cmr: float, alpha: float, beta: float) -> nx.Graph:
     """
     Locate a reliable cluster on the chip and create a subgraph.
 
@@ -165,15 +177,15 @@ def create_sub_graph(circuit: QuantumCircuit, coupling_map: List[List[int]],
     """
     # Initialize graph and rank
     graph = nx.Graph()
-    graph.add_edges_from([(edge[0], edge[1]) for edge in coupling_map])
+    for qubit, neighbors in utility.items():
+        for neighbor in neighbors:
+            graph.add_edge(qubit, neighbor)
 
     rank = 0
     root_node = None
 
     # Find the root node
-    attempts = 0
-    max_attempts = max(3, len(graph.nodes))
-    while root_node is None and attempts < max_attempts:
+    while root_node is None:
         for node in graph.nodes:
             neighbors = list(graph.neighbors(node))
             high_utility_neighbors = [n for n in neighbors if utility[n] > alpha]
@@ -185,10 +197,6 @@ def create_sub_graph(circuit: QuantumCircuit, coupling_map: List[List[int]],
 
         if root_node is None:
             rank += 1
-            attempts += 1
-
-    if root_node is None:
-        root_node = max(utility, key=utility.get)
 
     # Grow the subgraph
     sub_graph = nx.Graph()
@@ -208,8 +216,7 @@ def create_sub_graph(circuit: QuantumCircuit, coupling_map: List[List[int]],
 
     return sub_graph
 
-def fair_and_reliable_partition(graph: nx.Graph, usage: dict, interaction: dict,
-                                circuit: QuantumCircuit, used_nodes: set = None) -> dict:
+def fair_and_reliable_partition(graph: nx.Graph, usage: dict, interaction: dict, circuit: QuantumCircuit) -> dict:
     """
     Perform qubit allocation for fair and reliable partitioning.
 
@@ -223,15 +230,12 @@ def fair_and_reliable_partition(graph: nx.Graph, usage: dict, interaction: dict,
         dict: The qubit allocation.
     """
     allocation = {}
-    used_nodes = set() if used_nodes is None else set(used_nodes)
     unmapped_ancilla = [q for q in circuit.qubits if q not in usage]
     unmapped_program = [q for q in circuit.qubits if q in usage]
 
     # Map ancilla qubits
     for ancilla in unmapped_ancilla:
         for phy_q in graph.nodes:
-            if phy_q in used_nodes:
-                continue
             if phy_q not in allocation.values():
                 allocation[ancilla] = phy_q
                 break
@@ -239,64 +243,16 @@ def fair_and_reliable_partition(graph: nx.Graph, usage: dict, interaction: dict,
     # Map program qubits
     for program_qubit in unmapped_program:
         for phy_q in sorted(graph.nodes, key=lambda x: usage.get(x, 0), reverse=True):
-            if phy_q in used_nodes:
-                continue
             if phy_q not in allocation.values():
                 allocation[program_qubit] = phy_q
                 break
 
     return allocation
 
-
-def _ensure_full_allocation(allocation: Dict[Any, int],
-                            circuit: QuantumCircuit,
-                            available_nodes: List[int],
-                            avoid_nodes: set = None) -> Dict[Any, int]:
-    used = set(allocation.values())
-    if avoid_nodes:
-        used.update(avoid_nodes)
-    free_nodes = [n for n in available_nodes if n not in used]
-    for q in circuit.qubits:
-        if q not in allocation:
-            if not free_nodes and avoid_nodes:
-                free_nodes = [n for n in available_nodes if n not in allocation.values()]
-            if not free_nodes:
-                break
-            allocation[q] = free_nodes.pop(0)
-            used.add(allocation[q])
-    return allocation
-
-
-def _layout_from_allocation(allocation: Dict[Any, int],
-                            circuit: QuantumCircuit) -> List[int]:
-    layout_list = []
-    for q in circuit.qubits:
-        if q not in allocation:
-            return None
-        layout_list.append(allocation[q])
-    return layout_list
-
-
-def _layout_obj_from_allocation(allocation: Dict[Any, int],
-                                circuit: QuantumCircuit,
-                                available_nodes: List[int],
-                                avoid_nodes: set = None) -> Tuple[Layout, List[int]]:
-    allocation = _ensure_full_allocation(allocation, circuit, available_nodes, avoid_nodes=avoid_nodes)
-    layout_list = _layout_from_allocation(allocation, circuit)
-    if layout_list is None:
-        layout_list = available_nodes[:circuit.num_qubits]
-        allocation = {q: p for q, p in zip(circuit.qubits, layout_list)}
-    layout_obj = Layout({q: p for q, p in allocation.items()})
-    return layout_obj, layout_list
-
-
-def _as_coupling_map(coupling_map: Any) -> CouplingMap:
-    return coupling_map if isinstance(coupling_map, CouplingMap) else CouplingMap(coupling_map)
-
 def independent_qubit_allocation_and_scheduling(
     programs: List[QuantumCircuit],
     program_analysis: Dict[int, Dict[str, Any]],
-    backend_props: Dict[str, Any]
+    backend_props: Dict[int, float]
 ) -> List[QuantumCircuit]:
     """
     Perform independent qubit allocation and scheduling for a list of quantum programs.
@@ -315,12 +271,6 @@ def independent_qubit_allocation_and_scheduling(
     """
     scheduled_programs = []
 
-    utility = backend_props["utility"]
-    coupling_map = backend_props["coupling_map"]
-    coupling = _as_coupling_map(coupling_map)
-    coupling_edges = list(coupling.get_edges())
-    available_nodes = sorted(coupling.physical_qubits)
-
     for program_index, program in enumerate(programs):
         # Extract analysis results for the current program
         analysis = program_analysis[program_index]
@@ -329,29 +279,16 @@ def independent_qubit_allocation_and_scheduling(
         cmr = analysis["CMR"]
 
         # Step 1: Create a subgraph for the program
-        graph = create_sub_graph(program, coupling_edges, utility, cmr, alpha=0.6, beta=0.4)
+        graph = create_sub_graph(program, usage, cmr, alpha=0.6, beta=0.4)  # Alpha and beta are fixed here
 
         # Step 2: Perform fair and reliable partitioning
         qubit_allocation = fair_and_reliable_partition(graph, usage, interaction, program)
-        layout_obj, layout_list = _layout_obj_from_allocation(
-            qubit_allocation, program, available_nodes
-        )
 
         # Step 3: Apply SABRE mapping for variation-aware scheduling
-        prog_nodes = set(layout_list)
-        prog_coupling = [edge for edge in coupling_edges
-                         if edge[0] in prog_nodes and edge[1] in prog_nodes]
-        if not prog_coupling:
-            prog_coupling = [(layout_list[i], layout_list[i + 1])
-                             for i in range(len(layout_list) - 1)]
-        prog_coupling_map = CouplingMap(prog_coupling)
-        for node in prog_nodes:
-            if node not in prog_coupling_map.physical_qubits:
-                prog_coupling_map.add_physical_qubit(node)
-
-        pass_manager = PassManager([SetLayout(layout_obj), SabreSwap(prog_coupling_map)])
+        coupling = backend_props['coupling_map']
+        sabre_swap = SabreSwap(coupling)
+        pass_manager = PassManager(sabre_swap)
         scheduled_program = pass_manager.run(program)
-        scheduled_program._baseline_layout = layout_list
 
         # Append the scheduled program to the result list
         scheduled_programs.append(scheduled_program)
@@ -380,24 +317,16 @@ def shared_qubit_allocation_and_scheduling(
     """
     scheduled_programs = []
     shared_allocation = {}  # Shared allocation across all programs
-    per_program_allocation = {}
-    used_nodes = set()
 
     # Step 1: Create a combined subgraph for all programs
     combined_graph = nx.Graph()
-    utility = backend_props["utility"]
-    coupling_map = backend_props["coupling_map"]
-    coupling = _as_coupling_map(coupling_map)
-    coupling_edges = list(coupling.get_edges())
-    available_nodes = sorted(coupling.physical_qubits)
-
     for program_index, program in enumerate(programs):
         analysis = program_analysis[program_index]
         usage = analysis["Usage"]
         cmr = analysis["CMR"]
 
         # Create a subgraph for the current program
-        program_graph = create_sub_graph(program, coupling_edges, utility, cmr, alpha=0.6, beta=0.4)
+        program_graph = create_sub_graph(program, usage, cmr, alpha=0.6, beta=0.4)
         combined_graph = nx.compose(combined_graph, program_graph)
 
     # Step 2: Perform shared qubit allocation
@@ -407,46 +336,19 @@ def shared_qubit_allocation_and_scheduling(
         interaction = analysis["Interaction"]
 
         # Allocate qubits for the current program
-        allocation = fair_and_reliable_partition(
-            combined_graph, usage, interaction, program, used_nodes=used_nodes
-        )
-        allocation = _ensure_full_allocation(allocation, program, available_nodes, avoid_nodes=used_nodes)
+        allocation = fair_and_reliable_partition(combined_graph, usage, interaction, program)
 
+        # Merge the allocation into the shared allocation
         shared_allocation.update(allocation)
-        per_program_allocation[program_index] = allocation
-        used_nodes.update(allocation.values())
 
     # Step 3: Apply SABRE mapping for variation-aware scheduling
-    for program_index, program in enumerate(programs):
-        if program.num_qubits <= 1:
-            scheduled_programs.append(program)
-            continue
+    coupling_map = backend_props['coupling_map']
+    sabre_swap = SabreSwap(coupling_map)
+    pass_manager = PassManager(sabre_swap)
 
-        allocation = per_program_allocation.get(program_index, {})
-        layout_obj = None
-        layout_list = list(range(program.num_qubits))
-        if allocation:
-            layout_obj, layout_list = _layout_obj_from_allocation(
-                allocation, program, available_nodes, avoid_nodes=used_nodes
-            )
-
-        prog_nodes = set(allocation.values()) if allocation else set()
-        prog_coupling = [edge for edge in coupling_edges
-                         if edge[0] in prog_nodes and edge[1] in prog_nodes]
-        if not prog_coupling:
-            prog_coupling = list(coupling.get_edges())
-        prog_coupling_map = CouplingMap(prog_coupling)
-        for node in prog_nodes:
-            if node not in prog_coupling_map.physical_qubits:
-                prog_coupling_map.add_physical_qubit(node)
-
-        sabre_swap = SabreSwap(prog_coupling_map)
-        passes = [sabre_swap] if layout_obj is None else [SetLayout(layout_obj), sabre_swap]
-        pass_manager = PassManager(passes)
-
+    for program in programs:
         # Apply SABRE mapping to each program
         scheduled_program = pass_manager.run(program)
-        scheduled_program._baseline_layout = layout_list
         scheduled_programs.append(scheduled_program)
 
     return scheduled_programs
