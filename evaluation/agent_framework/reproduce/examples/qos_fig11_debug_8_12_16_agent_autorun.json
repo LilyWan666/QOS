@@ -1,6 +1,6 @@
 {
-  "name": "qos_fig11_full_agent_autorun",
-  "description": "Paper-aligned Figure 11 reproduction recipe for the QOS multi-programmer, using simulation-only/offline backend modeling.",
+  "name": "qos_fig11_debug_8_12_16_agent_autorun",
+  "description": "Debug-only Figure 11 reproduction recipe for the QOS multi-programmer, using 8/12/16-qubit simulated thresholds to validate the runtime path before the full 8/16/24 run.",
   "workspace_root": ".",
   "paper": {
     "documents": [
@@ -44,25 +44,18 @@
       "--output-dir",
       "{run_dir}/figures"
     ],
-    "timeout_seconds": 600,
+    "timeout_seconds": 900,
     "env": {
-      "REPRO_FIG11_THRESHOLD_QUBITS": "8,12,16",
-      "REPRO_QPU_NUM_QUBITS": "27",
-      "REPRO_FIG11_FULL_24Q_TIMEOUT_BOUNDED": "1",
+      "REPRO_FIG11_DEBUG_THRESHOLD_QUBITS": "8,12,16",
       "REPRO_AER_METHOD": "matrix_product_state",
-      "REPRO_AER_MAX_THREADS": "1",
-      "REPRO_AER_SHOTS": "1024",
-      "REPRO_PAIR_JOINT_AER_SHOTS": "1024",
-      "REPRO_FIG11_PAIRS_PER_UTIL": "24",
-      "REPRO_NOISE_QPU": "ibm_marrakesh",
-      "REPRO_NOISE_2Q_MODE": "layered"
+      "REPRO_AER_MAX_THREADS": "1"
     }
   },
   "preflight": {
     "commands_exist": ["python"],
     "paths_exist": [
       "evaluation/agent_framework/reproduce/harnesses/run_qos_fig11_full.py",
-      "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_full.contract.json",
+      "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_debug_8_12_16.contract.json",
       "paper/qos.pdf",
       "evaluation/benchmarks",
       "qos/multiprogrammer/multiprogrammer.py",
@@ -76,6 +69,8 @@
     "path": "{metrics_path}",
     "required_metric_keys": [
       "success",
+      "debug_simulation",
+      "debug_threshold_qubit_sequence",
       "figure_id",
       "threshold_count",
       "methods_count",
@@ -86,7 +81,7 @@
   "success_criteria": {
     "require_exit_code_zero": true,
     "require_metrics": true,
-    "require_metric_success": true,
+    "require_metric_success": false,
     "require_verification_success": true
   },
   "reproduction_requirements": {
@@ -113,7 +108,7 @@
   "verification": {
     "enabled": true,
     "kind": "figure_contract",
-    "contract_path": "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_full.contract.json",
+    "contract_path": "evaluation/agent_framework/reproduce/examples/figure_contracts/qos_fig11_debug_8_12_16.contract.json",
     "output_path": "{run_dir}/figure_verdict.json"
   },
   "recovery": {
@@ -124,6 +119,7 @@
   "metadata": {
     "seed_recipe": false,
     "owner": "reproduce_agent",
-    "notes": "This recipe is paper-aligned but simulation-only. It avoids IBM/QPU access and checks structural Figure 11 claims."
+    "debug_only": true,
+    "notes": "This recipe intentionally uses 8/12/16 threshold circuits and should not be treated as the final Fig. 11 reproduction."
   }
 }

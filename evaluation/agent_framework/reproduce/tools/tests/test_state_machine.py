@@ -19,6 +19,7 @@ class ReproStateMachineTests(unittest.TestCase):
         self.assertIn("repro_preflight", sm.next_allowed_actions(sm.INIT))
         self.assertIn("repro_run_once", sm.next_allowed_actions(sm.PREFLIGHT))
         self.assertIn("verify_claim", sm.next_allowed_actions(sm.RUN_ONCE))
+        self.assertIn("render_artifacts", sm.next_allowed_actions(sm.RUN_ONCE))
         self.assertIn("classify_failure", sm.next_allowed_actions(sm.RUN_FAILED))
         self.assertIn("render_artifacts", sm.next_allowed_actions(sm.SUCCESS))
 
@@ -53,9 +54,9 @@ class ReproStateMachineTests(unittest.TestCase):
         self.assertNotIn("success", actions)
         self.assertIn("test_plan", actions)
 
-    def test_artifacts_rendered_is_terminal_done_only(self) -> None:
+    def test_artifacts_rendered_allows_visual_compare_then_done(self) -> None:
         actions = sm.next_allowed_actions(sm.ARTIFACTS_RENDERED)
-        self.assertEqual(actions, ["done"])
+        self.assertEqual(actions, ["figure_visual_compare", "done"])
 
     def test_tool_guard_blocks_invalid_action_for_current_state(self) -> None:
         state = {}

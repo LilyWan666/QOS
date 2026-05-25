@@ -1,0 +1,113 @@
+{
+  "figure_id": "qos_fig11_debug_8_12_16",
+  "paper_claim": "Debug-only Figure 11 preflight for the QOS multi-programmer using smaller simulated threshold circuits at 8, 12, and 16 qubits.",
+  "expected_trend": "The debug run should exercise the original QOS/Baseline multiprogramming and Qiskit Aer simulation path for all nine benchmark applications and three utilization thresholds, while remaining explicitly marked as a partial reproduction that cannot satisfy the full Fig. 11 contract.",
+  "applications": [
+    "QAOA-R3",
+    "BV",
+    "GHZ",
+    "HS-1",
+    "QAOA-P1",
+    "QSVM",
+    "TL-1",
+    "VQE-1",
+    "W-STATE"
+  ],
+  "checks": [
+    {
+      "id": "success_false_for_debug",
+      "path": "success",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "debug_simulation_true",
+      "path": "debug_simulation",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "partial_reproduction_true",
+      "path": "partial_reproduction",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "debug_failure_category",
+      "path": "failure_category",
+      "type": "equals",
+      "value": "debug_simulation_not_final_reproduction"
+    },
+    {
+      "id": "simulation_only",
+      "path": "simulation_only",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "debug_threshold_qubit_sequence",
+      "path": "debug_threshold_qubit_sequence",
+      "type": "equals",
+      "value": [8, 12, 16]
+    },
+    {
+      "id": "debug_max_qubits",
+      "path": "debug_max_sim_qubits",
+      "type": "equals",
+      "value": 16
+    },
+    {
+      "id": "three_thresholds",
+      "path": "threshold_count",
+      "type": "equals",
+      "value": 3
+    },
+    {
+      "id": "three_methods",
+      "path": "methods_count",
+      "type": "equals",
+      "value": 3
+    },
+    {
+      "id": "nine_applications",
+      "path": "application_count",
+      "type": "equals",
+      "value": 9
+    },
+    {
+      "id": "fig11c_has_27_debug_bars",
+      "path": "relative_fidelity_application_count",
+      "type": "equals",
+      "value": 27
+    },
+    {
+      "id": "fig11c_first_relative_fidelity_numeric",
+      "path": "relative_fidelity_by_application[0].relative_fidelity",
+      "type": "numeric_between",
+      "min": 0.0,
+      "max": 1.2
+    },
+    {
+      "id": "has_qiskit_aer_execution",
+      "path": "metric_derivations.figure_11c.relative_fidelity.source",
+      "type": "equals",
+      "value": "qiskit_aer.AerSimulator.run"
+    },
+    {
+      "id": "has_stage_log",
+      "path": "stage_log[0].stage",
+      "type": "exists"
+    }
+  ],
+  "metric_semantics": {
+    "relative_fidelity": {
+      "debug_only": true,
+      "threshold_qubits": [8, 12, 16],
+      "must_not_satisfy_final_contract": true,
+      "forbid_proxy_substitution": true,
+      "fail_on_semantic_downgrade": true,
+      "notes": "This contract is only a runtime preflight. The full Fig. 11 contract remains responsible for enforcing pair-level multiprogrammed joint simulation provenance."
+    }
+  },
+  "pass_rule": "all"
+}

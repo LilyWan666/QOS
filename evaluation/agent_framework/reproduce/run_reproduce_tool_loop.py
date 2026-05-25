@@ -33,28 +33,91 @@ ACTION_TO_TOOL = {
     "repro_run_once": "tool_run_once.py",
     "classify_failure": "tool_classify_failure.py",
     "apply_fix": "tool_apply_fix.py",
+    "repo_path_probe": "tool_repo_path_probe.py",
+    "build_original_runner": "tool_build_original_runner.py",
+    "simulation_backend_fix": "tool_simulation_backend_fix.py",
+    "dependency_runtime_fix": "tool_dependency_runtime_fix.py",
+    "source_path_fix": "tool_source_path_fix.py",
+    "source_fix": "tool_source_fix.py",
+    "runtime_python_select": "tool_runtime_python_select.py",
+    "runtime_env_select": "tool_runtime_env_select.py",
+    "runtime_trace_fix": "tool_runtime_trace_fix.py",
+    "constraint_resolve": "tool_constraint_resolve.py",
+    "env_fix": "tool_env_fix.py",
     "fix_validate": "tool_fix_validate.py",
     "test_plan": "tool_test_plan.py",
     "run_unit_tests": "tool_run_unit_tests.py",
     "run_regression_tests": "tool_run_regression_tests.py",
     "verify_claim": "tool_verify_claim.py",
+    "figure_visual_compare": "tool_figure_visual_compare.py",
+    "original_pipeline_probe": "tool_original_pipeline_probe.py",
     "render_artifacts": "tool_render_artifacts.py",
 }
 
 ACTION_PRIORITY = [
     "classify_failure",
-    "apply_fix",
+    "original_pipeline_probe",
+    "repo_path_probe",
+    "build_original_runner",
+    "simulation_backend_fix",
+    "dependency_runtime_fix",
+    "source_path_fix",
+    "source_fix",
+    "constraint_resolve",
+    "runtime_trace_fix",
+    "runtime_python_select",
+    "runtime_env_select",
+    "env_fix",
     "fix_validate",
+    "apply_fix",
     "test_plan",
     "run_unit_tests",
     "run_regression_tests",
     "verify_claim",
+    "figure_visual_compare",
+    "original_pipeline_probe",
     "repro_run_once",
     "repro_preflight",
     "render_artifacts",
     "done",
     "terminal_failed",
 ]
+
+PYTHON_EXECUTABLE_ACTIONS = {
+    "repro_preflight",
+    "repro_run_once",
+    "apply_fix",
+    "repo_path_probe",
+    "build_original_runner",
+    "simulation_backend_fix",
+    "dependency_runtime_fix",
+    "source_path_fix",
+    "source_fix",
+    "runtime_python_select",
+    "runtime_env_select",
+    "runtime_trace_fix",
+    "env_fix",
+}
+
+OUTPUT_ROOT_ACTIONS = {
+    "repro_preflight",
+    "repro_run_once",
+    "repo_path_probe",
+    "original_pipeline_probe",
+    "verify_claim",
+}
+
+
+def action_completed(state: dict[str, Any], action: str) -> bool:
+    if action == "repo_path_probe":
+        return isinstance(state.get("last_repo_path_probe"), dict)
+    if action == "original_pipeline_probe":
+        return isinstance(state.get("last_original_pipeline_probe"), dict)
+    if action == "build_original_runner":
+        return bool(str(state.get("original_runner_path") or "").strip())
+    if action in {"runtime_env_select", "runtime_python_select"}:
+        return bool(str(state.get("runtime_python_executable") or "").strip())
+    return False
 
 
 def parse_bool_env(name: str, default: bool) -> bool:
@@ -180,28 +243,114 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 def choose_action_fallback(state: dict[str, Any], allowed_actions: list[str]) -> str:
     fsm_state = str(state.get("fsm_state", ""))
+    last_recovery = state.get("last_recovery")
+    recovery_payload = last_recovery.get("recovery") if isinstance(last_recovery, dict) else None
+    has_applied_recovery = bool((recovery_payload or {}).get("applied"))
+    apply_fix_preference = (
+        ["fix_validate", "repro_run_once", "repro_preflight"]
+        if has_applied_recovery
+        else ["repro_run_once", "repro_preflight", "fix_validate"]
+    )
+    suggested_actions: list[str] = []
+    last_classification = state.get("last_classification")
+    if isinstance(last_classification, dict):
+        suggested_actions.extend(
+            str(action)
+            for action in last_classification.get("suggested_recovery_actions", [])
+            if str(action)
+        )
+    last_failure_classification = state.get("last_failure_classification")
+    if isinstance(last_failure_classification, dict):
+        suggested_actions.extend(
+            str(action)
+            for action in last_failure_classification.get("recommended_actions", [])
+            if str(action)
+        )
+    last_visual_comparison = state.get("last_visual_comparison")
+    if isinstance(last_visual_comparison, dict):
+        suggested_actions.extend(
+            str(action)
+            for action in last_visual_comparison.get("recommended_actions", [])
+            if str(action)
+        )
+    last_dependency_runtime_fix = state.get("last_dependency_runtime_fix")
+    if isinstance(last_dependency_runtime_fix, dict):
+        suggested_actions.extend(
+            str(action)
+            for action in last_dependency_runtime_fix.get("recommended_next_actions", [])
+            if str(action)
+        )
+    suggested_actions = [
+        action for action in suggested_actions if not action_completed(state, action)
+    ]
+    full_fig11_without_original_runner = (
+        "qos_fig11_full" in str(state.get("recipe_name") or state.get("recipe_path") or "")
+        and not action_completed(state, "build_original_runner")
+    )
+    if full_fig11_without_original_runner and fsm_state == "CLASSIFY_FAILURE":
+        for action in ("original_pipeline_probe", "repo_path_probe", "build_original_runner"):
+            if action in allowed_actions and not action_completed(state, action):
+                return action
+    classification_text = json.dumps(
+        {
+            "last_classification": last_classification,
+            "last_failure_classification": last_failure_classification,
+            "last_attempt_payload": state.get("last_attempt_payload"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    missing_generated_runner_metrics = (
+        ("metrics_parse_failure" in classification_text or "metric_validation_failure" in classification_text)
+        and (
+            "debug_simulation" in classification_text
+            or "metric_provenance" in classification_text
+            or "semantic" in classification_text.lower()
+            or "fig11c_metric_unit_is_pair" in classification_text
+            or "fig11c_uses_joint_multiprogramming_simulation" in classification_text
+            or "qos_fig11_full" in str(state.get("recipe_name") or state.get("recipe_path") or "")
+        )
+        and not action_completed(state, "build_original_runner")
+    )
+    if missing_generated_runner_metrics:
+        for action in ("original_pipeline_probe", "repo_path_probe", "build_original_runner"):
+            if action in allowed_actions and not action_completed(state, action):
+                return action
+
     preferred_by_state: dict[str, list[str]] = {
         "INIT": ["repro_preflight"],
         "PREFLIGHT": ["repro_run_once", "test_plan", "classify_failure"],
         "PREFLIGHT_FAILED": ["classify_failure", "test_plan"],
         "RUN_ONCE": ["verify_claim", "test_plan", "classify_failure"],
         "RUN_FAILED": ["classify_failure", "test_plan"],
-        "CLASSIFY_FAILURE": ["apply_fix", "terminal_failed"],
-        "APPLY_FIX": ["fix_validate", "repro_run_once", "repro_preflight"],
+        "CLASSIFY_FAILURE": [
+            *suggested_actions,
+            "original_pipeline_probe",
+            "repo_path_probe",
+            "build_original_runner",
+            "simulation_backend_fix",
+            "dependency_runtime_fix",
+            "source_path_fix",
+            "source_fix",
+            "apply_fix",
+            "terminal_failed",
+        ],
+        "APPLY_FIX": apply_fix_preference,
         "FIX_VALIDATE": ["verify_claim", "test_plan", "classify_failure"],
         "TEST_PLAN": ["run_unit_tests", "run_regression_tests"],
         "UNIT_TEST": ["verify_claim", "classify_failure"],
         "REGRESSION_TEST": ["verify_claim", "classify_failure"],
-        "SUCCESS": ["render_artifacts", "done"],
+        "SUCCESS": ["figure_visual_compare", "render_artifacts", "done"],
+        "ARTIFACTS_RENDERED": ["figure_visual_compare", "done"],
         "BUDGET_EXHAUSTED": ["render_artifacts", "terminal_failed"],
         "TERMINAL_FAILED": ["render_artifacts", "done"],
     }
     preferred = preferred_by_state.get(fsm_state, [])
     for action in preferred:
-        if action in allowed_actions:
+        if action in allowed_actions and not action_completed(state, action):
             return action
     for action in ACTION_PRIORITY:
-        if action in allowed_actions:
+        if action in allowed_actions and not action_completed(state, action):
             return action
     return allowed_actions[0] if allowed_actions else "terminal_failed"
 
@@ -265,14 +414,17 @@ def run_tool_action(
     action: str,
     recipe_path: Path,
     state_path: Path,
-    python_executable: str,
+    tool_python_executable: str,
+    target_python_executable: str,
     output_root: Path,
     cwd: Path,
 ) -> dict[str, Any]:
     script = ACTION_TO_TOOL[action]
-    command = [python_executable, str(TOOLS_ROOT / script), "--state", str(state_path)]
-    if action in {"repro_preflight", "repro_run_once", "verify_claim"}:
+    command = [tool_python_executable, str(TOOLS_ROOT / script), "--state", str(state_path)]
+    if action in OUTPUT_ROOT_ACTIONS:
         command.extend(["--output-root", str(output_root)])
+    if action in PYTHON_EXECUTABLE_ACTIONS:
+        command.extend(["--python-executable", target_python_executable])
     if action not in {"run_unit_tests", "run_regression_tests", "render_artifacts"}:
         command.extend(["--recipe", str(recipe_path)])
     proc = subprocess.run(
@@ -410,11 +562,15 @@ def main() -> int:
             )
             break
 
+        target_python_executable = str(
+            state.get("runtime_python_executable") or args.python_executable
+        )
         result = run_tool_action(
             action=action,
             recipe_path=recipe_path,
             state_path=state_path,
-            python_executable=args.python_executable,
+            tool_python_executable=args.python_executable,
+            target_python_executable=target_python_executable,
             output_root=run_dir,
             cwd=repo_root,
         )
@@ -432,6 +588,7 @@ def main() -> int:
     final_fsm_state = str(final_state.get("fsm_state", "unknown"))
     strict_success = final_fsm_state == "SUCCESS" and final_status in {
         "verification_success",
+        "figure_visual_compare_success",
         "artifacts_rendered",
     }
     summary = {

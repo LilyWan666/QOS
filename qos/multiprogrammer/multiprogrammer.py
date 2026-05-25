@@ -23,8 +23,10 @@ class Multiprogrammer(Engine):
         self.done_queue = []
 
     def spatial_utilization(self, q1: Qernel, q2: Qernel, backend: QPU) -> float:
-        util1 = q1.num_qubits() / backend.num_qubits
-        util2 = q2.num_qubits() / backend.num_qubits
+        circ1 = q1.get_circuit()
+        circ2 = q2.get_circuit()
+        util1 = circ1.num_qubits / backend.num_qubits
+        util2 = circ2.num_qubits / backend.num_qubits
 
         return util1 + util2
 
@@ -44,35 +46,33 @@ class Multiprogrammer(Engine):
                    spatial utilization and temporal utilization, expressed as a percentage.
 
         Notes:
-            - Spatial utilization is determined by the Qernel with the maximum 
-              allocated qubits (C_max) relative to the total number of qubits 
-              available on the backend.
-            - Temporal utilization is a weighted sum of the spatial usage of 
-              each Qernel, where the weight is proportional to the depth of the 
-              Qernel relative to the maximum depth (D_max) among the Qernels.
+            - Spatial utilization is determined by the Qernel with the maximum
+              depth (D_max) relative to the total number of qubits available on
+              the backend.
+            - Temporal utilization accounts for the shorter-depth Qernel,
+              weighted by the ratio of its depth to D_max.
         """
-         # Find the Qernel with the maximum depth (D_max)
-        D_max = max((q1.depth(), q2.depth()))
+        circ1 = q1.get_circuit()
+        circ2 = q2.get_circuit()
+        D1 = circ1.depth()
+        D2 = circ2.depth()
+        D_max = max((D1, D2))
 
-        # Find the Qernel with the maximum allocated qubits (C_max)
-        C_max = max((q1.num_qubits(), q2.depth()))
+        if D1 >= D2:
+            C_max = circ1.num_qubits
+            C_other, D_other = circ2.num_qubits, D2
+        else:
+            C_max = circ2.num_qubits
+            C_other, D_other = circ1.num_qubits, D1
 
-        # Spatial utilization (from the Qernel with C_max)
         spatial_util = (C_max / backend.num_qubits) * 100
 
-        # Temporal utilization (weighted sum of spatial usage)
-        temporal_util = 0.0
-        qernels = [q1, q2]
-        for q in qernels:
-            D_k = q.depth()
-            C_k = q.num_qubits
-            weight = D_k / D_max
-            temporal_util += weight * (C_k / backend.num_qubits) * 100
+        if D_max > 0:
+            temporal_util = (D_other / D_max) * (C_other / backend.num_qubits) * 100
+        else:
+            temporal_util = 0.0
 
-        # Total effective utilization
-        u_eff = spatial_util + temporal_util
-
-        return u_eff
+        return spatial_util + temporal_util
 
     def get_matching_score(self, q1: Qernel, q2: Qernel, backend: QPU, weighted: bool = False, weights: List[float] = []) -> float:
         """

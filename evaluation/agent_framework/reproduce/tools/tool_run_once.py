@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,41 @@ from repro_toolkit import (
     set_fsm_state,
     write_state,
 )
+
+
+def _truncate(value, limit: int = 1200):
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "...[truncated]"
+    if isinstance(value, list):
+        return [_truncate(item, limit) for item in value[:12]]
+    if isinstance(value, dict):
+        return {str(key): _truncate(child, limit) for key, child in list(value.items())[:24]}
+    return value
+
+
+def compact_diagnosis(diagnosis: dict) -> dict:
+    """Keep routing evidence in state; leave huge traces in artifact files."""
+    classification = diagnosis.get("classification") or {}
+    evidence_blob = json.dumps(classification.get("evidence") or [], sort_keys=True)
+    signals = []
+    if "Qiskit is installed in an invalid environment" in evidence_blob:
+        signals.append("qiskit_invalid_environment")
+    if "No module named 'qiskit_algorithms'" in evidence_blob:
+        signals.append("missing_qiskit_algorithms")
+    compact = {
+        "status": diagnosis.get("status"),
+        "summary": _truncate(diagnosis.get("summary", "")),
+        "classification": {
+            "category": classification.get("category"),
+            "recoverable": classification.get("recoverable"),
+            "confidence": classification.get("confidence"),
+            "evidence": _truncate(classification.get("evidence") or []),
+            "signals": signals,
+        },
+        "hints": _truncate(diagnosis.get("hints") or []),
+        "recovery_plan": _truncate(diagnosis.get("recovery_plan") or {}),
+    }
+    return compact
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +129,7 @@ def main() -> int:
         preflight_only=False,
         allow_run_on_preflight_failure=args.allow_run_on_preflight_failure,
     )
+    diagnosis_for_state = compact_diagnosis(attempt["diagnosis_payload"])
 
     state.update(
         {
@@ -106,7 +143,7 @@ def main() -> int:
             "last_attempt_payload": {
                 "status": attempt["status"],
                 "status_payload": attempt["status_payload"],
-                "diagnosis_payload": attempt["diagnosis_payload"],
+                "diagnosis_payload": diagnosis_for_state,
                 "artifacts": attempt["artifacts"],
                 "attempt_dir": str(attempt_dir),
             },
@@ -130,7 +167,7 @@ def main() -> int:
             "attempt_dir": str(attempt_dir),
             "status": attempt["status"],
             "artifacts": attempt["artifacts"],
-            "diagnosis": attempt["diagnosis_payload"],
+            "diagnosis": diagnosis_for_state,
             "fsm_state": current_state,
             "next_allowed_actions": next_actions(state),
         },
@@ -145,7 +182,7 @@ def main() -> int:
                 "attempt_dir": str(attempt_dir),
                 "status": attempt["status"],
                 "artifacts": attempt["artifacts"],
-                "diagnosis": attempt["diagnosis_payload"],
+                "diagnosis": diagnosis_for_state,
                 "fsm_state": current_state,
                 "next_allowed_actions": next_actions(state),
             },
@@ -157,4 +194,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Some Qiskit/Aer import paths can leave non-daemon runtime threads behind.
+    # The tool has already persisted state/artifacts, so force a clean handoff
+    # back to the native OpenClaw loop instead of hanging in interpreter teardown.
+    os._exit(exit_code)

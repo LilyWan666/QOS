@@ -45,6 +45,12 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _append_missing_from_text(missing: list[str], text: str) -> None:
+    for module in MISSING_MODULE_RE.findall(text or ""):
+        if module and module not in missing:
+            missing.append(module)
+
+
 def _collect_missing_modules(state: dict[str, Any]) -> list[str]:
     artifacts = ((state.get("last_manifest") or {}).get("artifacts")) or {}
     metrics_raw = artifacts.get("metrics")
@@ -61,10 +67,14 @@ def _collect_missing_modules(state: dict[str, Any]) -> list[str]:
     for item in payload.get("checked_modules", []):
         if not isinstance(item, dict):
             continue
-        err = str(item.get("error", ""))
-        for module in MISSING_MODULE_RE.findall(err):
-            if module and module not in missing:
-                missing.append(module)
+        _append_missing_from_text(missing, str(item.get("error", "")))
+        _append_missing_from_text(missing, str(item.get("traceback", "")))
+    pipeline = payload.get("original_pipeline_evidence") or {}
+    for item in pipeline.get("inspected_candidates", []) or []:
+        if not isinstance(item, dict):
+            continue
+        _append_missing_from_text(missing, str(item.get("error", "")))
+        _append_missing_from_text(missing, str(item.get("traceback", "")))
     return missing
 
 
@@ -193,9 +203,30 @@ def _select_module_remap(
 
     legacy_defaults = {
         "qos.backends.types": "qos.types.types",
+        "qos.backends.test_qpu": "qos.error_mitigator.test_qpu",
+        "qos.tools": "qos.multiprogrammer.tools",
+        "qos.database": "qos.backends.database",
         "qos.dag": "qvm.compiler.dag",
+        "qos.time_estimator.base_estimator": "qos.scheduler.time_estimator.base_estimator",
+        "qos.time_estimator.basic_estimator": "qos.scheduler.time_estimator.basic_estimator",
+        "qos.time_estimator.regression_estimator": "qos.scheduler.time_estimator.regression_estimator",
+        "src.execution_time.base_estimator": "qos.scheduler.time_estimator.base_estimator",
+        "src.execution_time.basic_estimator": "qos.scheduler.time_estimator.basic_estimator",
+        "src.execution_time.regression_estimator": "qos.scheduler.time_estimator.regression_estimator",
+        "base_estimator": "qos.scheduler.time_estimator.base_estimator",
+        "basic_estimator": "qos.scheduler.time_estimator.basic_estimator",
+        "regression_estimator": "qos.scheduler.time_estimator.regression_estimator",
         "qvm.qvm": "qvm",
     }
+    missing_roots = {module.split(".", 1)[0] for module in missing_modules if module}
+    for old, new in legacy_defaults.items():
+        if old in remap:
+            continue
+        if old not in missing_modules and old.split(".", 1)[0] not in missing_roots:
+            continue
+        if _module_exists(workspace_root, new):
+            remap[old] = new
+
     for missing_module in missing_modules:
         if missing_module in remap:
             continue

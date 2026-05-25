@@ -32,7 +32,17 @@ from runtime_profiles import (  # noqa: E402
 )
 
 MISSING_MODULE_RE = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
-LOCAL_MODULE_SKIP = {"src", "test", "tests", "qos", "qvm", "Baseline_Multiprogramming"}
+LOCAL_MODULE_SKIP = {
+    "src",
+    "test",
+    "tests",
+    "qos",
+    "qvm",
+    "Baseline_Multiprogramming",
+    "base_estimator",
+    "basic_estimator",
+    "regression_estimator",
+}
 PIP_PACKAGE_CANDIDATES: dict[str, list[str]] = {
     "qiskit_ibm_runtime": ["qiskit-ibm-runtime"],
     "qiskit_ibm_provider": ["qiskit-ibm-provider"],
@@ -45,6 +55,9 @@ PIP_PACKAGE_CANDIDATES: dict[str, list[str]] = {
     "jsonpickle": ["jsonpickle"],
     "mapomatic": ["mapomatic==0.10.0", "mapomatic==0.9.0", "mapomatic"],
     "mqt": ["mqt.predictor==1.2.2", "mqt.predictor", "mqt.qmap", "mqt"],
+    "redis": ["redis==7.4.0", "redis"],
+    "dimod": ["dimod==0.12.21", "dimod"],
+    "sklearn": ["scikit-learn"],
 }
 LEGACY_QISKIT_STACK = ["qiskit==0.46.3", "qiskit-ibm-provider==0.10.0", "qiskit-aer==0.14.2"]
 LEGACY_QISKIT_TRIGGER_MODULES = {
@@ -54,6 +67,9 @@ LEGACY_QISKIT_TRIGGER_MODULES = {
     "qiskit_ibm_runtime",
     "mapomatic",
     "mqt",
+}
+LEGACY_QISKIT_CONFLICTING_ROOTS = {
+    "mqt": "mqt.predictor currently pulls a Qiskit 2.x/Numpy 2.x stack that conflicts with legacy Qiskit 0.46 reproduction environments",
 }
 
 
@@ -67,6 +83,12 @@ def parse_args() -> argparse.Namespace:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _append_missing_from_text(missing: list[str], text: str) -> None:
+    for module in MISSING_MODULE_RE.findall(text or ""):
+        if module and module not in missing:
+            missing.append(module)
 
 
 def _collect_missing_modules_from_state(state: dict[str, Any]) -> list[str]:
@@ -83,10 +105,22 @@ def _collect_missing_modules_from_state(state: dict[str, Any]) -> list[str]:
             for item in payload.get("checked_modules", []):
                 if not isinstance(item, dict):
                     continue
-                err = str(item.get("error", ""))
-                for module in MISSING_MODULE_RE.findall(err):
-                    if module and module not in missing:
-                        missing.append(module)
+                _append_missing_from_text(missing, str(item.get("error", "")))
+                _append_missing_from_text(missing, str(item.get("traceback", "")))
+            pipeline = payload.get("original_pipeline_evidence") or {}
+            for item in pipeline.get("inspected_candidates", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                _append_missing_from_text(missing, str(item.get("error", "")))
+                _append_missing_from_text(missing, str(item.get("traceback", "")))
+            raw_metrics = payload.get("raw_metrics") or {}
+            if isinstance(raw_metrics, dict):
+                benchmark_errors = ((raw_metrics.get("benchmarks") or {}).get("errors")) or []
+                for item in benchmark_errors:
+                    if not isinstance(item, dict):
+                        continue
+                    _append_missing_from_text(missing, str(item.get("error", "")))
+                    _append_missing_from_text(missing, str(item.get("traceback", "")))
     attempt_payload = state.get("last_attempt_payload") or {}
     diagnosis = attempt_payload.get("diagnosis_payload") or {}
     evidence = ((diagnosis.get("classification") or {}).get("evidence")) or []
@@ -136,6 +170,39 @@ def _workspace_has_module_root(state: dict[str, Any], module_root: str) -> bool:
     if not workspace_root.exists():
         return False
     return (workspace_root / module_root).is_dir() or (workspace_root / f"{module_root}.py").is_file()
+
+
+def _workspace_has_module_candidate(state: dict[str, Any], module_name: str) -> bool:
+    raw_workspace = str(state.get("workspace_root") or "").strip()
+    module_name = module_name.strip()
+    if not raw_workspace or not module_name:
+        return False
+    workspace_root = Path(raw_workspace).resolve()
+    if not workspace_root.exists():
+        return False
+
+    module_path = Path(*module_name.split("."))
+    direct_candidates = [
+        workspace_root / f"{module_path}.py",
+        workspace_root / module_path / "__init__.py",
+    ]
+    if any(path.exists() for path in direct_candidates):
+        return True
+
+    # Some legacy repos import sibling files as bare modules. Treat a matching
+    # repo file as local so pip install is not used for workspace code.
+    if "." not in module_name:
+        try:
+            next(workspace_root.rglob(f"{module_name}.py"))
+            return True
+        except StopIteration:
+            pass
+        try:
+            next(workspace_root.rglob(f"{module_name}/__init__.py"))
+            return True
+        except StopIteration:
+            pass
+    return False
 
 
 def _pip_install(python_executable: str, requirement: str) -> dict[str, Any]:
@@ -254,12 +321,45 @@ def main() -> int:
         root = module.split(".", 1)[0].strip()
         if not root:
             continue
-        if root in LOCAL_MODULE_SKIP or _workspace_has_module_root(state, root):
+        if (
+            root in LOCAL_MODULE_SKIP
+            or _workspace_has_module_root(state, root)
+            or _workspace_has_module_candidate(state, module)
+        ):
             if module not in local_workspace_modules:
                 local_workspace_modules.append(module)
             continue
         if root not in runtime_modules:
             runtime_modules.append(root)
+
+    if not runtime_modules:
+        set_fsm_state(state, "CLASSIFY_FAILURE")
+        state["last_status"] = "dependency_runtime_fix_skipped"
+        payload = {
+            "tool": "repro_dependency_runtime_fix",
+            "status": "skipped",
+            "reason": "no third-party missing runtime modules detected",
+            "missing_modules": missing_modules,
+            "runtime_modules": runtime_modules,
+            "local_workspace_modules": local_workspace_modules,
+            "resolved_modules": [],
+            "runtime_profile": {
+                "selected": None,
+                "result": None,
+            },
+            "install_results": [],
+            "import_verify_results": [],
+            "blocked_repeated_modules": [],
+            "unresolved": [],
+            "qiskit_guard": {"attempted": False, "ok": True, "reason": "not_required", "install_results": []},
+            "fsm_state": get_fsm_state(state),
+            "next_allowed_actions": next_actions(state),
+        }
+        state["last_step"] = "repro_dependency_runtime_fix"
+        append_history(state, "repro_dependency_runtime_fix", payload)
+        write_state(state_path, state)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
 
     venv_dir, venv_python = ensure_runtime_env_selected(
         state=state,
@@ -285,11 +385,32 @@ def main() -> int:
         verify_failures = {}
         state["runtime_import_verify_failures"] = verify_failures
     blocked_repeated_modules: list[str] = []
+    blocked_optional_modules: list[str] = []
     for module in runtime_modules:
         root = module.split(".", 1)[0].strip()
         if module in profile_handled_modules or root in profile_handled_modules:
-            continue
+            verify = _verify_import(str(venv_python), module)
+            import_verify_results.append(verify)
+            if verify.get("ok"):
+                continue
+            profile_handled_modules.discard(module)
+            profile_handled_modules.discard(root)
         previous_failures = int(verify_failures.get(module, 0) or 0)
+        if profile_name == "qiskit_legacy_046" and root in LEGACY_QISKIT_CONFLICTING_ROOTS:
+            reason = LEGACY_QISKIT_CONFLICTING_ROOTS[root]
+            if module not in blocked_optional_modules:
+                blocked_optional_modules.append(module)
+            unresolved.append({"module": module, "reason": "dependency_conflicts_with_runtime_profile"})
+            install_results.append(
+                {
+                    "module": module,
+                    "ok": False,
+                    "blocked": True,
+                    "reason": "dependency_conflicts_with_runtime_profile",
+                    "detail": reason,
+                }
+            )
+            continue
         if previous_failures >= 3:
             blocked_repeated_modules.append(module)
             unresolved.append(
@@ -339,7 +460,9 @@ def main() -> int:
         for module in runtime_modules:
             root = module.split(".", 1)[0].strip()
             if module in profile_handled_modules or root in profile_handled_modules:
-                if module not in resolved:
+                verify = _verify_import(str(venv_python), module)
+                import_verify_results.append(verify)
+                if verify.get("ok") and module not in resolved:
                     resolved.append(module)
 
     qiskit_guard = _enforce_legacy_qiskit_stack_if_needed(str(venv_python), runtime_modules, state)
@@ -389,6 +512,12 @@ def main() -> int:
         "install_results": install_results,
         "import_verify_results": import_verify_results,
         "blocked_repeated_modules": blocked_repeated_modules,
+        "blocked_optional_modules": blocked_optional_modules,
+        "recommended_next_actions": (
+            ["source_fix", "build_original_runner", "repro_run_once"]
+            if any(module.split(".", 1)[0] == "mqt" for module in blocked_optional_modules)
+            else []
+        ),
         "unresolved": unresolved,
         "qiskit_guard": qiskit_guard,
         "isolation": {
@@ -401,6 +530,7 @@ def main() -> int:
         "next_allowed_actions": next_actions(state),
     }
     state["last_step"] = "repro_dependency_runtime_fix"
+    state["last_dependency_runtime_fix"] = payload
     append_history(state, "repro_dependency_runtime_fix", payload)
     write_state(state_path, state)
     print(json.dumps(payload, indent=2, sort_keys=True))

@@ -158,6 +158,37 @@ def collect_original_code_path_evidence(
     }
 
 
+def proxy_harness_entry_violation(
+    recipe: dict[str, Any],
+    workspace_root: Path,
+    command: list[str],
+) -> dict[str, Any] | None:
+    req = original_code_path_requirements(recipe)
+    if not req["required"]:
+        return None
+
+    command_paths = [_normalize_rel_path(item, workspace_root) for item in command]
+    forbidden_hits = [
+        prefix
+        for prefix in req["forbidden_path_prefixes"]
+        if any(path.startswith(prefix) for path in command_paths)
+    ]
+    harness_hits = [
+        path
+        for path in command_paths
+        if path.startswith("evaluation/agent_framework/reproduce/harnesses/")
+    ]
+    if not forbidden_hits and not harness_hits:
+        return None
+
+    return {
+        "reason": "proxy harness entry is forbidden when original code path is required",
+        "command_paths": command_paths,
+        "forbidden_hits": forbidden_hits,
+        "harness_hits": harness_hits,
+    }
+
+
 def run_import_check(python_exe: str, workspace_root: Path, module_name: str) -> dict[str, Any]:
     script = (
         "import importlib, json, sys; "
@@ -323,6 +354,7 @@ def classify_failure(
     status: str,
     preflight_payload: dict[str, Any],
     run_payload: dict[str, Any] | None,
+    metrics_payload: dict[str, Any] | None,
     run_error_signals: dict[str, Any] | None,
     parse_error: str | None,
     status_payload: dict[str, Any] | None = None,
@@ -349,6 +381,14 @@ def classify_failure(
                 "confidence": 0.98,
                 "evidence": [evidence] if isinstance(evidence, dict) else [],
             }
+
+    if status == "run_failed" and run_payload is not None and run_payload.get("proxy_harness_forbidden"):
+        return {
+            "category": "original_code_path_not_exercised",
+            "recoverable": True,
+            "confidence": 0.99,
+            "evidence": [run_payload.get("proxy_harness_forbidden")],
+        }
 
     if status == "preflight_failed":
         failed_imports = [
@@ -497,6 +537,19 @@ def classify_failure(
         }
 
     if status == "metric_failed":
+        if isinstance(metrics_payload, dict) and metrics_payload.get("failure_category") == "original_pipeline_not_executable":
+            return {
+                "category": "original_pipeline_not_executable",
+                "recoverable": True,
+                "confidence": 0.95,
+                "evidence": [
+                    {
+                        "reason": metrics_payload.get("reason"),
+                        "recommended_next_actions": metrics_payload.get("recommended_next_actions", []),
+                        "original_pipeline_evidence": metrics_payload.get("original_pipeline_evidence", {}),
+                    }
+                ],
+            }
         return {
             "category": "metric_validation_failure",
             "recoverable": True,
@@ -667,10 +720,106 @@ def build_recovery_plan(
                 "detail": "Inspect original repository execution paths before accepting proxy-only artifacts.",
             },
             {
+                "action": "original_pipeline_probe",
+                "detail": "Map the figure claim to original repository metric-producing modules before building a runner.",
+            },
+            {
                 "action": "build_original_runner",
                 "detail": "Route the reproduction through original repository modules and collect code-path evidence.",
             },
         ]
+    elif category == "original_pipeline_not_executable":
+        evidence_text = json.dumps(classification.get("evidence", []), sort_keys=True)
+        if "invalid environment" in evidence_text and "qiskit-terra" in evidence_text:
+            plan["actions"] = [
+                {
+                    "action": "runtime_env_select",
+                    "detail": "Select a Python environment with a consistent Qiskit install before patching source.",
+                },
+                {
+                    "action": "dependency_runtime_fix",
+                    "detail": "Repair dependency/runtime selection if no compatible interpreter is already available.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run after the runtime no longer mixes Qiskit >=1.0 with old qiskit-terra packages.",
+                },
+            ]
+        elif "No module named 'mqt'" in evidence_text or 'No module named "mqt"' in evidence_text:
+            plan["actions"] = [
+                {
+                    "action": "source_fix",
+                    "detail": "Treat mqt.predictor as optional in simulation-only reproduction and install a lightweight feature fallback in the isolated workspace.",
+                },
+                {
+                    "action": "build_original_runner",
+                    "detail": "Regenerate the original-code runner after the optional predictor fallback is patched.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run without installing mqt into the legacy Qiskit runtime.",
+                },
+            ]
+        elif "No module named 'qos." in evidence_text or "No module named 'qvm." in evidence_text:
+            plan["actions"] = [
+                {
+                    "action": "source_path_fix",
+                    "detail": "Repair in-repo package paths or compatibility modules needed by the original QOS pipeline.",
+                },
+                {
+                    "action": "runtime_trace_fix",
+                    "detail": "Patch narrow import-surface mismatches exposed while importing original QOS modules.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run after the original in-repo imports resolve.",
+                },
+            ]
+        elif "cannot import name" in evidence_text and ("from 'qos." in evidence_text or "from 'qvm." in evidence_text):
+            plan["actions"] = [
+                {
+                    "action": "runtime_trace_fix",
+                    "detail": "Patch narrow in-repo symbol export/import mismatches in the original QOS pipeline.",
+                },
+                {
+                    "action": "source_path_fix",
+                    "detail": "Repair package layout if symbol fixes require compatibility exports.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run after the original in-repo imports resolve.",
+                },
+            ]
+        elif "No module named" in evidence_text:
+            plan["actions"] = [
+                {
+                    "action": "dependency_runtime_fix",
+                    "detail": "Install or select runtime dependencies required by the original pipeline.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run after missing third-party modules are available.",
+                },
+            ]
+        else:
+            plan["actions"] = [
+                {
+                    "action": "simulation_backend_fix",
+                    "detail": "Replace remote QPU/IBM backend surfaces in the isolated workspace so original modules can execute offline.",
+                },
+                {
+                    "action": "source_fix",
+                    "detail": "Patch the isolated runner/source to call original metric-producing functions instead of proxy formulas.",
+                },
+                {
+                    "action": "build_original_runner",
+                    "detail": "Regenerate the original-code runner after simulation/source fixes.",
+                },
+                {
+                    "action": "retry_reproduce",
+                    "detail": "Re-run and require metrics to come from original repository pipeline evidence.",
+                },
+            ]
 
     return plan
 
@@ -775,6 +924,7 @@ def build_diagnosis(
         status,
         preflight_payload,
         run_payload,
+        metrics_payload,
         run_error_signals,
         parse_error,
         status_payload,
@@ -851,6 +1001,12 @@ def build_diagnosis(
         return diagnosis
     if status == "metric_failed":
         diagnosis["summary"] = "Metrics were produced but do not satisfy success criteria."
+        if classification["category"] == "original_pipeline_not_executable":
+            diagnosis["summary"] = "Original repository pipeline candidates were found, but no safe raw-metric execution path was built yet."
+            diagnosis["hints"].append(
+                "Use simulation_backend_fix/source_fix to replace QPU-only surfaces and wire the runner to original metric-producing functions."
+            )
+            return diagnosis
         if metrics_payload is not None and not metrics_payload.get("success", True):
             diagnosis["hints"].append("Inspect metrics.json for module-level failures.")
         if verification_payload is not None and not verification_payload.get("success", True):
@@ -928,27 +1084,61 @@ def run_attempt(
 
         started_at = iso_now()
         started = time.time()
-        proc = subprocess.run(
-            command,
-            cwd=workspace_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        duration = time.time() - started
-
-        stdout_path.write_text(proc.stdout, encoding="utf-8")
-        stderr_path.write_text(proc.stderr, encoding="utf-8")
+        proxy_violation = proxy_harness_entry_violation(recipe, workspace_root, command)
+        if proxy_violation is not None:
+            duration = time.time() - started
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text(
+                "[reproduce] proxy harness entry refused\n"
+                + json.dumps(proxy_violation, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
+            returncode = 2
+            timed_out = False
+        else:
+            try:
+                proc = subprocess.run(
+                    command,
+                    cwd=workspace_root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+                duration = time.time() - started
+                stdout_path.write_text(proc.stdout, encoding="utf-8")
+                stderr_path.write_text(proc.stderr, encoding="utf-8")
+                returncode = proc.returncode
+                timed_out = False
+            except subprocess.TimeoutExpired as exc:
+                duration = time.time() - started
+                stdout = exc.stdout or ""
+                stderr = exc.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode(errors="replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors="replace")
+                stderr = (
+                    str(stderr)
+                    + f"\n[reproduce] command timed out after {timeout_seconds} seconds\n"
+                )
+                stdout_path.write_text(str(stdout), encoding="utf-8")
+                stderr_path.write_text(stderr, encoding="utf-8")
+                returncode = 124
+                timed_out = True
         run_payload = {
             "command": command,
             "cwd": str(workspace_root),
             "started_at": started_at,
             "duration_seconds": duration,
-            "returncode": proc.returncode,
+            "returncode": returncode,
             "timeout_seconds": timeout_seconds,
+            "timed_out": timed_out,
         }
+        if proxy_violation is not None:
+            run_payload["proxy_harness_forbidden"] = proxy_violation
         write_json(run_json_path, run_payload)
         run_error_signals = collect_run_error_signals(attempt_dir)
 

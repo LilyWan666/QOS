@@ -18,17 +18,21 @@ VLLM_IMG="/work/nvme/betu/openrtlset2/env/apptainer_images/vllm_gh200_v0.11.0.si
 WAIT_SCRIPT="/work/nvme/betu/openrtlset2/dataset_gen/llm_inferences/src/gh200-utils/wait_for_vllm.py"
 
 : "${REPRO_CONDA_ROOT:=/work/nvme/becn/lily/miniconda3}"
-: "${REPRO_CONDA_ENV:=qos_fig11}"
-: "${REPRO_PYTHON_BIN:=${REPRO_CONDA_ROOT}/envs/${REPRO_CONDA_ENV}/bin/python}"
+: "${REPRO_CONDA_ENV:=}"
+: "${REPRO_BOOTSTRAP_PYTHON:=python3}"
+: "${REPRO_PYTHON_BIN:=}"
 : "${REPRO_RECIPE:=${REPO_ROOT}/evaluation/agent_framework/reproduce/examples/qos_run_process_qernels_smoke.json}"
 : "${REPRO_OUTPUT_ROOT:=${REPO_ROOT}/temp/agent_framework/reproduce_tool_loop/runs}"
+: "${REPRO_STATE:=}"
 : "${REPRO_AGENT_MODEL:=Qwen2.5-14B-Instruct}"
 : "${REPRO_AGENT_API_KEY:=token-abc123}"
 : "${REPRO_VLLM_HOST:=127.0.0.1}"
 : "${REPRO_VLLM_PORT:=8000}"
 : "${REPRO_MAX_AGENT_STEPS:=8}"
+: "${REPRO_ALLOW_OFFLINE_AGENT:=0}"
 : "${REPRO_GPU_MEMORY_UTILIZATION:=0.85}"
 : "${REPRO_MAX_MODEL_LEN:=32768}"
+: "${REPRO_AER_SHOTS:=1024}"
 
 REPRO_AGENT_API_BASE="http://${REPRO_VLLM_HOST}:${REPRO_VLLM_PORT}/v1"
 
@@ -63,11 +67,16 @@ if port_in_use "${REPRO_VLLM_PORT}"; then
 fi
 REPRO_AGENT_API_BASE="http://${REPRO_VLLM_HOST}:${REPRO_VLLM_PORT}/v1"
 
-source "${REPRO_CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate "${REPRO_CONDA_ENV}"
+if [[ -n "${REPRO_CONDA_ENV}" ]]; then
+  source "${REPRO_CONDA_ROOT}/etc/profile.d/conda.sh"
+  conda activate "${REPRO_CONDA_ENV}"
+  if [[ -z "${REPRO_PYTHON_BIN}" ]]; then
+    REPRO_PYTHON_BIN="${REPRO_CONDA_ROOT}/envs/${REPRO_CONDA_ENV}/bin/python"
+  fi
+fi
 
-if [[ ! -x "${REPRO_PYTHON_BIN}" ]]; then
-  REPRO_PYTHON_BIN="$(command -v python)"
+if [[ -z "${REPRO_PYTHON_BIN}" || ! -x "${REPRO_PYTHON_BIN}" ]]; then
+  REPRO_PYTHON_BIN="$(command -v "${REPRO_BOOTSTRAP_PYTHON}")"
 fi
 
 cleanup() {
@@ -81,8 +90,13 @@ trap cleanup EXIT
 cd "${REPO_ROOT}"
 
 echo "[INFO] recipe=${REPRO_RECIPE}"
+echo "[INFO] state=${REPRO_STATE:-<new>}"
 echo "[INFO] model=${REPRO_AGENT_MODEL}"
 echo "[INFO] api_base=${REPRO_AGENT_API_BASE}"
+echo "[INFO] bootstrap_python=${REPRO_PYTHON_BIN}"
+echo "[INFO] max_agent_steps=${REPRO_MAX_AGENT_STEPS}"
+echo "[INFO] allow_offline_agent=${REPRO_ALLOW_OFFLINE_AGENT}"
+echo "[INFO] aer_shots=${REPRO_AER_SHOTS}"
 
 apptainer run --nv --bind /projects,/work,/u "${VLLM_IMG}" \
   vllm serve "${MODEL_DIR}" \
@@ -101,6 +115,15 @@ echo -n "Waiting for vLLM startup at: ${REPRO_AGENT_API_BASE} "
 python3 -u "${WAIT_SCRIPT}" --vllm_host "${REPRO_VLLM_HOST}" --vllm_port "${REPRO_VLLM_PORT}"
 echo "vLLM startup completed at: ${REPRO_AGENT_API_BASE}"
 
+STATE_ARGS=()
+if [[ -n "${REPRO_STATE}" ]]; then
+  STATE_ARGS=(--state "${REPRO_STATE}")
+fi
+OFFLINE_ARGS=()
+if [[ "${REPRO_ALLOW_OFFLINE_AGENT}" == "1" ]]; then
+  OFFLINE_ARGS=(--allow-offline-agent)
+fi
+
 cd "${RUST_ROOT}"
 cargo run -q -p rusty-claude-cli -- reproduce --tool-loop \
   --recipe "${REPRO_RECIPE}" \
@@ -110,4 +133,6 @@ cargo run -q -p rusty-claude-cli -- reproduce --tool-loop \
   --exit-policy strict \
   --model "${REPRO_AGENT_MODEL}" \
   --api-base "${REPRO_AGENT_API_BASE}" \
-  --api-key "${REPRO_AGENT_API_KEY}"
+  --api-key "${REPRO_AGENT_API_KEY}" \
+  "${STATE_ARGS[@]}" \
+  "${OFFLINE_ARGS[@]}"
