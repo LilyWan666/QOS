@@ -199,6 +199,7 @@ import os
 import random
 import re
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -215,12 +216,29 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 STAGE_LOG: list[dict] = []
+PARTIAL_METRICS_PATH: Path | None = None
 
 
 def _stage(name: str, **fields) -> None:
     record = {{"stage": name, **fields}}
     STAGE_LOG.append(record)
     print("[repro-stage] " + json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _write_simulation_checkpoint(payload: dict) -> None:
+    if PARTIAL_METRICS_PATH is None:
+        return
+    checkpoint = dict(payload)
+    checkpoint["stage_log_tail"] = STAGE_LOG[-80:]
+    checkpoint["updated_at_epoch_seconds"] = time.time()
+    try:
+        write_json(PARTIAL_METRICS_PATH, checkpoint)
+    except Exception as exc:
+        _stage("simulation_checkpoint_write_failed", error=repr(exc), path=str(PARTIAL_METRICS_PATH))
+
+
+def _defer_expensive_no_mp_for_proxy() -> bool:
+    return os.environ.get("REPRO_FIG11_DEFER_EXPENSIVE_NO_MP_FOR_PROXY", "0").strip().lower() in {{"1", "true", "yes", "on"}}
 
 
 def _safe_signature(obj) -> str:
@@ -469,6 +487,14 @@ def _execute_original_pipeline_smoke() -> dict:
 def _mean(values) -> float:
     values = [float(v) for v in values if v is not None]
     return sum(values) / len(values) if values else 0.0
+
+
+def _std(values) -> float:
+    values = [float(v) for v in values if v is not None]
+    if not values:
+        return 0.0
+    mean = sum(values) / len(values)
+    return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -1070,16 +1096,23 @@ def _simulate_noisy_fidelity(circuit, *, noise_model, shots: int, seed: int) -> 
     return _full_count_distribution_fidelity(ideal_counts, noisy_counts, shots)
 
 
+def _simulation_shots() -> int:
+    return int(os.environ.get("REPRO_AER_SHOTS", "8192") or "8192")
+
+
 def _simulate_target_size_no_mp_fidelity(circuit, threshold: float, noise_model_info: dict, *, shots: int | None = None, seed: int = 31415) -> dict:
     if shots is None:
-        shots = int(os.environ.get("REPRO_AER_SHOTS", "1024") or "1024")
+        shots = _simulation_shots()
     qubits = int(getattr(circuit, "num_qubits", 0) or 0)
     _stage("simulate_no_mp_target_size_start", threshold=threshold, qubits=qubits, shots=shots)
+    started = time.perf_counter()
     fidelity = _simulate_noisy_fidelity(circuit, noise_model=noise_model_info.get("noise_model"), shots=shots, seed=seed)
-    _stage("simulate_no_mp_target_size_done", threshold=threshold, qubits=qubits, fidelity=fidelity)
+    seconds = time.perf_counter() - started
+    _stage("simulate_no_mp_target_size_done", threshold=threshold, qubits=qubits, fidelity=fidelity, seconds=seconds)
     return {{
         "fidelity": _clamp(float(fidelity), 0.0, 1.0),
         "shots": shots,
+        "seconds": seconds,
         "selected_qubits": qubits,
         "unit_of_execution": "single_circuit_target_size",
         "source_role": "fig11a_no_multiprogramming_target_size_solo",
@@ -1100,7 +1133,7 @@ def _simulate_application_relative_fidelity(circuit, threshold: float, matching:
     # noise model. Do not invent a utilization noise schedule unless the repo
     # contains an explicit model for it; record that limitation instead.
     if shots is None:
-        shots = int(os.environ.get("REPRO_AER_SHOTS", "1024") or "1024")
+        shots = _simulation_shots()
     _stage(
         "simulate_relative_fidelity_start",
         threshold=threshold,
@@ -1388,7 +1421,7 @@ def _select_or_build_qos_bundles(qernels: list, returned: object, matching_value
 
 def _simulate_pair_joint_relative_fidelity(bundles: list, threshold: float, noise_model_info: dict, *, shots: int | None = None, seed: int = 31415, layout_backend=None) -> dict:
     if shots is None:
-        shots = int(os.environ.get("REPRO_PAIR_JOINT_AER_SHOTS", os.environ.get("REPRO_AER_SHOTS", "64")) or "64")
+        shots = _simulation_shots()
     if not bundles:
         raise RuntimeError("no selected bundles available for pair-level joint simulation")
     if layout_backend is None:
@@ -1697,16 +1730,9 @@ def _ranked_topk_pairs(scored: list[dict], n_pairs: int) -> tuple[list[dict], di
 
 
 def _select_qos_candidate_pairs(candidates: list[dict], n_pairs: int, mp, qpu, required_applications: list[str] | None = None) -> tuple[list[dict], dict]:
-    scored = []
-    errors = []
+    scored, errors = _score_candidate_pairs(candidates, mp, qpu)
     required = [str(app) for app in (required_applications or []) if str(app)]
     required_set = set(required)
-    for pair in candidates:
-        try:
-            scored.append(_score_candidate_pair(pair, mp, qpu))
-        except Exception as exc:
-            errors.append({{"pair": pair.get("pair_label"), "error": repr(exc)}})
-    scored.sort(key=lambda item: (float(item.get("selection_score") or 0.0), float(item.get("effective_utilization_percent") or 0.0)), reverse=True)
     if required_set:
         selected, selection_details = _coverage_aware_topk_pairs(scored, n_pairs, required)
     else:
@@ -1723,27 +1749,104 @@ def _select_qos_candidate_pairs(candidates: list[dict], n_pairs: int, mp, qpu, r
     }}
 
 
-def _select_qos_application_representative_pairs(candidates: list[dict], application: str, n_pairs: int, mp, qpu) -> tuple[list[dict], dict]:
-    application = str(application)
-    app_candidates = [
-        pair
-        for pair in candidates
-        if application in _pair_applications(pair)
-    ]
-    selected, selection = _select_qos_candidate_pairs(app_candidates, n_pairs, mp, qpu, required_applications=None)
-    selection.update({{
-        "selection_mode": "per_application_ranked_representative",
-        "base_selection_mode": "ranked_topk",
-        "application": application,
-        "candidate_count_for_application": len(app_candidates),
-        "pair_contains_application": all(application in _pair_applications(pair) for pair in selected),
-    }})
-    return selected, selection
+def _score_candidate_pairs(candidates: list[dict], mp, qpu) -> tuple[list[dict], list[dict]]:
+    scored = []
+    errors = []
+    for pair in candidates:
+        try:
+            scored.append(_score_candidate_pair(pair, mp, qpu))
+        except Exception as exc:
+            errors.append({{"pair": pair.get("pair_label"), "error": repr(exc)}})
+    scored.sort(key=lambda item: (float(item.get("selection_score") or 0.0), float(item.get("effective_utilization_percent") or 0.0)), reverse=True)
+    return scored, errors
+
+
+def _select_fig11c_stratified_pairs(candidates: list[dict], n_pairs: int, mp, qpu, applications: list[str], *, min_pairs_per_app: int) -> tuple[list[dict], dict]:
+    scored, errors = _score_candidate_pairs(candidates, mp, qpu)
+    required_apps = [str(app) for app in applications if str(app)]
+    required_set = set(required_apps)
+    min_pairs = max(1, int(min_pairs_per_app or 1))
+    requested_topk = None if n_pairs is None or n_pairs <= 0 else int(n_pairs)
+    selected = []
+    selected_labels = set()
+    app_pair_labels = {{app: set() for app in required_apps}}
+    stratified_labels = []
+
+    def add_pair(pair: dict, *, bucket: list[str]) -> bool:
+        label = pair.get("pair_label")
+        if not label or label in selected_labels:
+            return False
+        selected.append(pair)
+        selected_labels.add(label)
+        bucket.append(label)
+        for app in _pair_applications(pair) & required_set:
+            app_pair_labels.setdefault(app, set()).add(label)
+        return True
+
+    while True:
+        missing = [app for app in required_apps if len(app_pair_labels.get(app, set())) < min_pairs]
+        if not missing:
+            break
+        best = None
+        best_key = None
+        missing_set = set(missing)
+        for pair in scored:
+            if pair.get("pair_label") in selected_labels:
+                continue
+            pair_apps = _pair_applications(pair) & missing_set
+            if not pair_apps:
+                continue
+            deficits = sum(max(0, min_pairs - len(app_pair_labels.get(app, set()))) for app in pair_apps)
+            key = (
+                len(pair_apps),
+                deficits,
+                float(pair.get("selection_score") or 0.0),
+                float(pair.get("effective_utilization_percent") or 0.0),
+                str(pair.get("pair_label") or ""),
+            )
+            if best is None or key > best_key:
+                best = pair
+                best_key = key
+        if best is None:
+            break
+        add_pair(best, bucket=stratified_labels)
+
+    fill_labels = []
+    target_count = len(scored) if requested_topk is None else max(requested_topk, len(selected))
+    for pair in scored:
+        if len(selected) >= target_count:
+            break
+        add_pair(pair, bucket=fill_labels)
+
+    app_counts = {{app: len(app_pair_labels.get(app, set())) for app in required_apps}}
+    missing_apps = sorted(app for app, count in app_counts.items() if count < min_pairs)
+    return selected, {{
+        "candidate_count": len(candidates),
+        "scored_count": len(scored),
+        "selected_count": len(selected),
+        "errors": errors[:10],
+        "pair_selection_source": "qos.multiprogrammer.Multiprogrammer.get_matching_score_ranked_candidate_pairs",
+        "selection_mode": "ranked_stratified_per_application",
+        "selection_passes": ["per_application_min_unique_pairs", "score_topk_fill"],
+        "requested_topk": requested_topk,
+        "target_count_after_coverage_expansion": target_count,
+        "min_unique_pairs_per_application": min_pairs,
+        "stratified_selected_count": len(stratified_labels),
+        "score_fill_selected_count": len(fill_labels),
+        "stratified_pair_labels": stratified_labels,
+        "score_fill_pair_labels": fill_labels,
+        "required_applications": sorted(required_set),
+        "application_unique_pair_counts": app_counts,
+        "covered_applications": sorted(app for app, count in app_counts.items() if count >= min_pairs),
+        "missing_applications": missing_apps,
+        "application_coverage_complete": not missing_apps,
+        "auto_expanded_for_coverage": requested_topk is not None and len(stratified_labels) > requested_topk,
+    }}
 
 
 def _simulate_selected_pair_set(pairs: list[dict], mode: str, threshold: float, noise_model_info: dict, mp, qpu, *, shots: int | None = None, seed: int = 31415, layout_backend=None) -> dict:
     if shots is None:
-        shots = int(os.environ.get("REPRO_PAIR_JOINT_AER_SHOTS", os.environ.get("REPRO_AER_SHOTS", "64")) or "64")
+        shots = _simulation_shots()
     if layout_backend is None:
         layout_backend, _ = _load_fake_backend()
     if layout_backend is None:
@@ -1879,6 +1982,8 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
         "methods": ["no_multiprogramming", "baseline_multiprogramming", "qos_multiprogramming"],
         "results": [],
         "relative_fidelity_by_application": [],
+        "simulation_timing_by_threshold": [],
+        "simulation_timing_by_threshold_map": {{}},
         "metric_derivations": {{}},
         "workloads": [],
         "simulation_noise_model": {{}},
@@ -2002,16 +2107,36 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             threshold_pair_metrics = {{}}
             threshold_no_mp_simulations = {{}}
             _stage("application_threshold_simulation_start", application=app, threshold_count=len(result["thresholds"]))
+            deferred_no_mp_thresholds = set()
+            max_threshold = max(result["thresholds"]) if result["thresholds"] else None
             for threshold in result["thresholds"]:
                 threshold_circuit = threshold_circuits[threshold]
                 no_mp_circuit = no_mp_threshold_circuits[threshold]
                 pair_component_circuit = threshold_pair_circuits[threshold]
-                threshold_no_mp_simulations[threshold] = _simulate_target_size_no_mp_fidelity(
-                    no_mp_circuit,
-                    threshold,
-                    noise_model_info,
-                    seed=27182 + len(per_app) * 101 + int(threshold * 1000),
-                )
+                if _defer_expensive_no_mp_for_proxy() and max_threshold is not None and threshold == max_threshold:
+                    deferred_no_mp_thresholds.add(threshold)
+                    threshold_no_mp_simulations[threshold] = {{
+                        "fidelity": 0.0,
+                        "shots": _simulation_shots(),
+                        "threshold": threshold,
+                        "selected_qubits": getattr(no_mp_circuit, "num_qubits", None),
+                        "status": "deferred_until_after_small_scale_memory",
+                        "deferred_for_proxy_memory": True,
+                        "reason": "avoid blocking small-threshold selected-pair checkpoints before expensive largest-threshold simulation",
+                    }}
+                    _stage(
+                        "simulate_no_mp_target_size_deferred",
+                        threshold=threshold,
+                        qubits=getattr(no_mp_circuit, "num_qubits", None),
+                        application=app,
+                    )
+                else:
+                    threshold_no_mp_simulations[threshold] = _simulate_target_size_no_mp_fidelity(
+                        no_mp_circuit,
+                        threshold,
+                        noise_model_info,
+                        seed=27182 + len(per_app) * 101 + int(threshold * 1000),
+                    )
                 threshold_cmr = float(baseline.compute_CMR(pair_component_circuit))
                 cmr_values.append(threshold_cmr)
                 qernels = [
@@ -2043,6 +2168,28 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
                     "source": "qos.multiprogrammer.Multiprogrammer.effective_utilization",
                 }}
                 _stage("application_pair_metrics_done", application=app, threshold=threshold)
+                _write_simulation_checkpoint({{
+                    "schema": "qos_agent.partial_simulation_checkpoint.v1",
+                    "status": "running",
+                    "checkpoint_kind": "application_threshold_metrics",
+                    "workspace_root": str(workspace_root),
+                    "applications_completed": [item.get("application") for item in per_app],
+                    "current_application": app,
+                    "threshold": threshold,
+                    "thresholds": result.get("thresholds") or [],
+                    "simulation_shots": _simulation_shots(),
+                    "qpu_qubits": result.get("qpu_qubits"),
+                    "simulation_noise_model": result.get("simulation_noise_model") or {{}},
+                    "no_mp_target_size_records": {{
+                        str(key): value for key, value in threshold_no_mp_simulations.items()
+                    }},
+                    "application_pair_metric_records": {{
+                        str(key): value for key, value in threshold_pair_metrics.items()
+                    }},
+                    "selected_pair_simulation_records_by_threshold": result.get("selected_pair_simulation_records_by_threshold") or {{}},
+                    "simulation_timing_by_threshold": result.get("simulation_timing_by_threshold") or [],
+                    "simulation_timing_by_threshold_map": result.get("simulation_timing_by_threshold_map") or {{}},
+                }})
                 threshold_return_counts[threshold] = 0
                 bundle_selection = {{
                     "ok": True,
@@ -2062,10 +2209,12 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
                 threshold_simulations[threshold] = {{
                     "relative_fidelity": 0.0,
                     "solo_fidelity": threshold_no_mp_simulations[threshold]["fidelity"],
+                    "solo_fidelity_status": threshold_no_mp_simulations[threshold].get("status", "computed"),
+                    "deferred_for_proxy_memory": threshold in deferred_no_mp_thresholds,
                     "baseline_fidelity": 0.0,
                     "qos_fidelity": 0.0,
                     "joint_fidelity": 0.0,
-                    "shots": int(os.environ.get("REPRO_PAIR_JOINT_AER_SHOTS", os.environ.get("REPRO_AER_SHOTS", "64")) or "64"),
+                    "shots": _simulation_shots(),
                     "bundle_count": 0,
                     "pair_records": [],
                     "estimator": "global_selected_pair_set_simulation",
@@ -2153,14 +2302,13 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
     except Exception:
         n_pairs_per_util = 24
     try:
-        n_fig11c_pairs_per_application = int(os.environ.get("REPRO_FIG11C_PAIRS_PER_APPLICATION", "1") or "1")
+        fig11c_min_pairs_per_app = int(os.environ.get("REPRO_FIG11C_MIN_PAIRS_PER_APP", "3") or "3")
     except Exception:
-        n_fig11c_pairs_per_application = 1
-    required_applications = [item["application"] for item in per_app]
+        fig11c_min_pairs_per_app = 3
     selected_pair_results_by_threshold = {{}}
-    fig11c_application_pair_results_by_threshold = {{}}
     pair_selection_records = {{}}
     for threshold in result["thresholds"]:
+        threshold_started = time.perf_counter()
         selected_qubits = None
         for workload in workloads:
             selected_qubits = (workload.get("threshold_selected_qubits") or {{}}).get(threshold)
@@ -2172,10 +2320,20 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             raise RuntimeError(f"no candidate pairs available for selected_qubits={{selected_qubits}} threshold={{threshold}}")
         baseline_pairs = _select_baseline_candidate_pairs(candidates, n_pairs_per_util, seed=8675309 + int(threshold * 1000))
         qos_pairs, qos_selection = _select_qos_candidate_pairs(candidates, n_pairs_per_util, mp, qpu, required_applications=None)
+        fig11c_pairs, fig11c_selection = _select_fig11c_stratified_pairs(
+            candidates,
+            n_pairs_per_util,
+            mp,
+            qpu,
+            [item["application"] for item in per_app],
+            min_pairs_per_app=fig11c_min_pairs_per_app,
+        )
         if not baseline_pairs:
             raise RuntimeError(f"no baseline pairs selected for selected_qubits={{selected_qubits}} threshold={{threshold}}")
         if not qos_pairs:
             raise RuntimeError(f"no qos pairs selected for selected_qubits={{selected_qubits}} threshold={{threshold}}")
+        if not fig11c_pairs:
+            raise RuntimeError(f"no fig11c stratified qos pairs selected for selected_qubits={{selected_qubits}} threshold={{threshold}}")
         _stage(
             "selected_pair_sets_ready",
             threshold=threshold,
@@ -2183,7 +2341,17 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             candidate_count=len(candidates),
             baseline_pair_count=len(baseline_pairs),
             qos_pair_count=len(qos_pairs),
+            fig11c_pair_count=len(fig11c_pairs),
         )
+        _stage(
+            "selected_pair_threshold_simulation_start",
+            threshold=threshold,
+            selected_qubits=selected_qubits,
+            baseline_pair_count=len(baseline_pairs),
+            qos_pair_count=len(qos_pairs),
+            fig11c_pair_count=len(fig11c_pairs),
+        )
+        baseline_started = time.perf_counter()
         baseline_pair_result = _simulate_selected_pair_set(
             baseline_pairs,
             "baseline",
@@ -2194,6 +2362,15 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             seed=41000 + int(threshold * 1000),
             layout_backend=layout_backend,
         )
+        baseline_seconds = time.perf_counter() - baseline_started
+        _stage(
+            "selected_pair_threshold_mode_done",
+            threshold=threshold,
+            selected_qubits=selected_qubits,
+            mode="baseline",
+            seconds=baseline_seconds,
+        )
+        qos_started = time.perf_counter()
         qos_pair_result = _simulate_selected_pair_set(
             qos_pairs,
             "qos",
@@ -2204,19 +2381,66 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             seed=51000 + int(threshold * 1000),
             layout_backend=layout_backend,
         )
-        qos_pair_records_by_label = {{
-            str(record.get("pair_label")): record
-            for record in (qos_pair_result.get("records") or [])
-            if record.get("pair_label") is not None
+        qos_seconds = time.perf_counter() - qos_started
+        _stage(
+            "selected_pair_threshold_mode_done",
+            threshold=threshold,
+            selected_qubits=selected_qubits,
+            mode="qos",
+            seconds=qos_seconds,
+        )
+        fig11c_started = time.perf_counter()
+        fig11c_pair_result = _simulate_selected_pair_set(
+            fig11c_pairs,
+            "qos",
+            threshold,
+            noise_model_info,
+            mp,
+            qpu,
+            seed=61000 + int(threshold * 1000),
+            layout_backend=layout_backend,
+        )
+        fig11c_seconds = time.perf_counter() - fig11c_started
+        threshold_seconds = time.perf_counter() - threshold_started
+        timing_record = {{
+            "threshold": threshold,
+            "selected_qubits": selected_qubits,
+            "status": "success",
+            "seconds": threshold_seconds,
+            "mode_seconds": {{
+                "baseline": baseline_seconds,
+                "qos": qos_seconds,
+                "fig11c_qos": fig11c_seconds,
+            }},
+            "pair_counts": {{
+                "baseline": len(baseline_pairs),
+                "qos": len(qos_pairs),
+                "fig11c_qos": len(fig11c_pairs),
+            }},
         }}
+        result["simulation_timing_by_threshold"].append(timing_record)
+        result["simulation_timing_by_threshold_map"][str(threshold)] = timing_record
+        _stage(
+            "selected_pair_threshold_simulation_done",
+            threshold=threshold,
+            selected_qubits=selected_qubits,
+            seconds=threshold_seconds,
+            baseline_seconds=baseline_seconds,
+            qos_seconds=qos_seconds,
+            fig11c_seconds=fig11c_seconds,
+        )
         selected_pair_results_by_threshold[threshold] = {{
             "selected_qubits": selected_qubits,
             "candidate_count": len(candidates),
+            "simulation_timing": timing_record,
             "baseline": baseline_pair_result,
             "qos": qos_pair_result,
+            "fig11c_qos": fig11c_pair_result,
             "baseline_pair_labels": [pair.get("pair_label") for pair in baseline_pairs],
             "qos_pair_labels": [pair.get("pair_label") for pair in qos_pairs],
+            "fig11c_qos_pair_labels": [pair.get("pair_label") for pair in fig11c_pairs],
             "qos_selection": qos_selection,
+            "fig11c_selection": fig11c_selection,
             "baseline_qos_pair_sets_are_distinct": set(pair.get("pair_label") for pair in baseline_pairs) != set(pair.get("pair_label") for pair in qos_pairs),
             "selection_mode": qos_selection.get("selection_mode"),
             "requested_topk": qos_selection.get("requested_topk"),
@@ -2227,65 +2451,19 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             "application_coverage_complete": bool(qos_selection.get("application_coverage_complete")),
             "covered_applications": qos_selection.get("covered_applications") or [],
             "missing_applications": qos_selection.get("missing_applications") or [],
+            "fig11c_application_coverage_complete": bool(fig11c_selection.get("application_coverage_complete")),
+            "fig11c_application_unique_pair_counts": fig11c_selection.get("application_unique_pair_counts") or {{}},
+            "fig11c_missing_applications": fig11c_selection.get("missing_applications") or [],
         }}
-        fig11c_application_pair_results_by_threshold[threshold] = {{}}
-        for app_index, app_name in enumerate(required_applications):
-            app_pairs, app_selection = _select_qos_application_representative_pairs(
-                candidates,
-                app_name,
-                n_fig11c_pairs_per_application,
-                mp,
-                qpu,
-            )
-            if not app_pairs:
-                raise RuntimeError(
-                    "no Fig11c representative QOS pair selected for "
-                    f"application={{app_name}} threshold={{threshold}} selected_qubits={{selected_qubits}}"
-                )
-            app_pair_labels = [str(pair.get("pair_label")) for pair in app_pairs]
-            reusable_records = [
-                qos_pair_records_by_label.get(label)
-                for label in app_pair_labels
-                if qos_pair_records_by_label.get(label) is not None
-            ]
-            if len(reusable_records) == len(app_pairs):
-                app_pair_result = _selected_pair_records_result(
-                    reusable_records,
-                    "qos",
-                    threshold,
-                    shots=qos_pair_result.get("shots"),
-                    source="qiskit_aer.AerSimulator.run:same_attempt_selected_pair_records",
-                )
-            else:
-                app_pair_result = _simulate_selected_pair_set(
-                    app_pairs,
-                    "qos",
-                    threshold,
-                    noise_model_info,
-                    mp,
-                    qpu,
-                    seed=61000 + int(threshold * 1000) + app_index * 97,
-                    layout_backend=layout_backend,
-                )
-            fig11c_application_pair_results_by_threshold[threshold][app_name] = {{
-                "selected_qubits": selected_qubits,
-                "candidate_count": len(candidates),
-                "selection": app_selection,
-                "selected_pair_labels": [pair.get("pair_label") for pair in app_pairs],
-                "selected_pair_count": len(app_pairs),
-                "selection_mode": "per_application_ranked_representative",
-                "pair_contains_application": bool(app_selection.get("pair_contains_application")),
-                "simulation_reuse": bool(app_pair_result.get("simulation_reuse")),
-                "simulation_reuse_scope": app_pair_result.get("simulation_reuse_scope"),
-                "pair_result": app_pair_result,
-            }}
         pair_selection_records[str(threshold)] = {{
             "selected_qubits": selected_qubits,
             "candidate_count": len(candidates),
             "baseline_pair_count": len(baseline_pairs),
             "qos_pair_count": len(qos_pairs),
+            "fig11c_qos_pair_count": len(fig11c_pairs),
             "baseline_pair_labels": [pair.get("pair_label") for pair in baseline_pairs],
             "qos_pair_labels": [pair.get("pair_label") for pair in qos_pairs],
+            "fig11c_qos_pair_labels": [pair.get("pair_label") for pair in fig11c_pairs],
             "baseline_qos_pair_sets_are_distinct": selected_pair_results_by_threshold[threshold]["baseline_qos_pair_sets_are_distinct"],
             "selection_mode": selected_pair_results_by_threshold[threshold]["selection_mode"],
             "requested_topk": selected_pair_results_by_threshold[threshold]["requested_topk"],
@@ -2297,31 +2475,159 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             "covered_applications": selected_pair_results_by_threshold[threshold]["covered_applications"],
             "missing_applications": selected_pair_results_by_threshold[threshold]["missing_applications"],
             "qos_selection": qos_selection,
+            "fig11c_selection": fig11c_selection,
         }}
+        _write_simulation_checkpoint({{
+            "schema": "qos_agent.partial_simulation_checkpoint.v1",
+            "status": "running",
+            "checkpoint_kind": "selected_pair_threshold_complete",
+            "workspace_root": str(workspace_root),
+            "threshold": threshold,
+            "thresholds": result.get("thresholds") or [],
+            "simulation_shots": _simulation_shots(),
+            "qpu_qubits": result.get("qpu_qubits"),
+            "simulation_noise_model": result.get("simulation_noise_model") or {{}},
+            "selected_pair_sets_by_threshold": pair_selection_records,
+            "selected_pair_simulation_records_by_threshold": {{
+                str(key): {{
+                    "selected_qubits": value.get("selected_qubits"),
+                    "baseline": {{
+                        "pair_count": (value.get("baseline") or {{}}).get("pair_count"),
+                        "shots": (value.get("baseline") or {{}}).get("shots"),
+                        "records": (value.get("baseline") or {{}}).get("records") or [],
+                    }},
+                    "qos": {{
+                        "pair_count": (value.get("qos") or {{}}).get("pair_count"),
+                        "shots": (value.get("qos") or {{}}).get("shots"),
+                        "records": (value.get("qos") or {{}}).get("records") or [],
+                    }},
+                    "fig11c_qos": {{
+                        "pair_count": (value.get("fig11c_qos") or {{}}).get("pair_count"),
+                        "shots": (value.get("fig11c_qos") or {{}}).get("shots"),
+                        "records": (value.get("fig11c_qos") or {{}}).get("records") or [],
+                    }},
+                    "source": "qiskit_aer.AerSimulator.run",
+                    "unit_of_execution": "selected_pair_set",
+                }}
+                for key, value in selected_pair_results_by_threshold.items()
+            }},
+            "simulation_timing_by_threshold": result.get("simulation_timing_by_threshold") or [],
+            "simulation_timing_by_threshold_map": result.get("simulation_timing_by_threshold_map") or {{}},
+        }})
     result["selected_pair_sets_by_threshold"] = pair_selection_records
-    result["fig11c_application_pair_sets_by_threshold"] = {{
-        str(threshold): {{
-            app_name: {{
-                key: value
-                for key, value in app_record.items()
-                if key != "pair_result"
-            }}
-            for app_name, app_record in (fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).items()
+    result["selected_pair_simulation_records_by_threshold"] = {{}}
+    for threshold, selected_pair_result in selected_pair_results_by_threshold.items():
+        result["selected_pair_simulation_records_by_threshold"][str(threshold)] = {{
+            "selected_qubits": selected_pair_result.get("selected_qubits"),
+            "baseline": {{
+                "pair_count": (selected_pair_result.get("baseline") or {{}}).get("pair_count"),
+                "shots": (selected_pair_result.get("baseline") or {{}}).get("shots"),
+                "records": (selected_pair_result.get("baseline") or {{}}).get("records") or [],
+            }},
+            "qos": {{
+                "pair_count": (selected_pair_result.get("qos") or {{}}).get("pair_count"),
+                "shots": (selected_pair_result.get("qos") or {{}}).get("shots"),
+                "records": (selected_pair_result.get("qos") or {{}}).get("records") or [],
+            }},
+            "fig11c_qos": {{
+                "pair_count": (selected_pair_result.get("fig11c_qos") or {{}}).get("pair_count"),
+                "shots": (selected_pair_result.get("fig11c_qos") or {{}}).get("shots"),
+                "records": (selected_pair_result.get("fig11c_qos") or {{}}).get("records") or [],
+            }},
+            "source": "qiskit_aer.AerSimulator.run",
+            "unit_of_execution": "selected_pair_set",
         }}
-        for threshold in result["thresholds"]
-    }}
-    result["fig11c_application_coverage_by_threshold"] = {{
-        str(threshold): {{
-            "required_applications": sorted(required_applications),
-            "covered_applications": sorted((fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).keys()),
-            "missing_applications": sorted(set(required_applications) - set((fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).keys())),
-            "covered_application_count": len((fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).keys()),
-            "required_application_count": len(required_applications),
-            "application_coverage_complete": set(required_applications).issubset(set((fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).keys())),
-            "coverage_source": "per_application_ranked_representative_pair_records",
+    result["relative_fidelity_by_utilization"] = []
+    for threshold in result["thresholds"]:
+        selected_pair_result = selected_pair_results_by_threshold.get(threshold) or {{}}
+        baseline_result = selected_pair_result.get("baseline") or {{}}
+        qos_result = selected_pair_result.get("qos") or {{}}
+        baseline_values = [
+            float(record.get("relative_fidelity", 0.0))
+            for record in (baseline_result.get("records") or [])
+        ]
+        qos_values = [
+            float(record.get("relative_fidelity", 0.0))
+            for record in (qos_result.get("records") or [])
+        ]
+        if not baseline_values or not qos_values:
+            result["errors"].append({{
+                "stage": "fig11c_pair_set_relative_fidelity",
+                "threshold": threshold,
+                "error": "missing baseline or qos selected-pair relative fidelity records",
+            }})
+            continue
+        result["relative_fidelity_by_utilization"].append({{
+            "threshold": threshold,
+            "selected_qubits": selected_pair_result.get("selected_qubits"),
+            "baseline_relative_fidelity": _mean(baseline_values),
+            "qos_relative_fidelity": _mean(qos_values),
+            "baseline_relative_fidelity_std": _std(baseline_values),
+            "qos_relative_fidelity_std": _std(qos_values),
+            "baseline_pair_count": len(baseline_values),
+            "qos_pair_count": len(qos_values),
+            "source_type": "simulation_backend",
+            "unit_of_execution": "selected_pair_set",
+            "aggregation": "per_application_mean_from_selected_pair_components",
+            "baseline_layout_policy": "consecutive_layout",
+            "qos_layout_policy": "error_aware_non_overlapping_layout",
+            "no_application_breakdown": True,
+        }})
+    result["relative_fidelity_by_application"] = []
+    result["fig11c_application_coverage_by_threshold"] = {{}}
+    for threshold in result["thresholds"]:
+        selected_pair_result = selected_pair_results_by_threshold.get(threshold) or {{}}
+        qos_result = selected_pair_result.get("fig11c_qos") or {{}}
+        app_component_values = {{str(item["application"]): [] for item in per_app}}
+        app_pair_labels = {{str(item["application"]): [] for item in per_app}}
+        for record in (qos_result.get("records") or []):
+            components = record.get("component_relative_fidelities") or []
+            left_app = str(record.get("left_application") or "")
+            right_app = str(record.get("right_application") or "")
+            if left_app in app_component_values and components:
+                app_component_values[left_app].append(float(components[0]))
+                app_pair_labels[left_app].append(record.get("pair_label"))
+            if right_app in app_component_values and len(components) > 1:
+                app_component_values[right_app].append(float(components[1]))
+                app_pair_labels[right_app].append(record.get("pair_label"))
+        covered_apps = sorted(app for app, values in app_component_values.items() if values)
+        missing_apps = sorted(app for app, values in app_component_values.items() if not values)
+        result["fig11c_application_coverage_by_threshold"][str(threshold)] = {{
+            "required_applications": sorted(app_component_values),
+            "covered_applications": covered_apps,
+            "missing_applications": missing_apps,
+            "covered_application_count": len(covered_apps),
+            "required_application_count": len(app_component_values),
+            "application_coverage_complete": not missing_apps,
+            "coverage_source": "fig11c_stratified_qos_pair_set_component_records",
+            "min_unique_pairs_per_application": fig11c_min_pairs_per_app,
+            "application_unique_pair_counts": (selected_pair_result.get("fig11c_application_unique_pair_counts") or {{}}),
+            "stratified_selection_complete": bool(selected_pair_result.get("fig11c_application_coverage_complete")),
         }}
-        for threshold in result["thresholds"]
-    }}
+        for app_name in sorted(app_component_values):
+            values = app_component_values[app_name]
+            if not values:
+                result["errors"].append({{
+                    "stage": "fig11c_application_coverage",
+                    "application": app_name,
+                    "threshold": threshold,
+                    "error": "application is not covered by selected QOS pair-set simulation records",
+                }})
+                continue
+            result["relative_fidelity_by_application"].append({{
+                "application": app_name,
+                "threshold": threshold,
+                "selected_qubits": selected_pair_result.get("selected_qubits"),
+                "relative_fidelity": _mean(values),
+                "relative_fidelity_std": _std(values),
+                "per_application_source": "fig11c_stratified_qos_pair_set_component_records",
+                "no_application_fallback": True,
+                "selected_qos_pair_record_count": len(values),
+                "selected_qos_unique_pair_count": len(set(app_pair_labels.get(app_name) or [])),
+                "selected_qos_pair_labels": app_pair_labels.get(app_name) or [],
+                "source_type": "simulation_backend",
+                "unit_of_execution": "selected_pair_set_component_records",
+            }})
     result["fig11c_application_coverage_complete"] = all(
         bool(item.get("application_coverage_complete"))
         for item in result["fig11c_application_coverage_by_threshold"].values()
@@ -2382,84 +2688,6 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
                 ]:
                     method_values[method]["fidelity_values"].append(fidelity)
                     method_values[method]["effective_utilization_values"].append(utilization)
-            fig11c_app_record = (fig11c_application_pair_results_by_threshold.get(threshold) or {{}}).get(item["application"]) or {{}}
-            fig11c_pair_result = fig11c_app_record.get("pair_result") or {{}}
-            app_relative_values = []
-            for record in (fig11c_pair_result.get("records") or []):
-                components = record.get("component_relative_fidelities") or []
-                if record.get("left_application") == item["application"] and components:
-                    app_relative_values.append(float(components[0]))
-                if record.get("right_application") == item["application"] and len(components) > 1:
-                    app_relative_values.append(float(components[1]))
-            if not app_relative_values:
-                result["errors"].append({{
-                    "stage": "fig11c_application_coverage",
-                    "application": item["application"],
-                    "threshold": threshold,
-                    "error": "application is not covered by selected QOS pair simulation records",
-                }})
-                continue
-            relative_qos_fidelity = _mean(app_relative_values)
-            result["relative_fidelity_by_application"].append(
-                {{
-                    "application": item["application"],
-                    "threshold": threshold,
-                    "relative_fidelity": relative_qos_fidelity,
-                    "per_application_source": "per_application_ranked_representative_pair_records",
-                    "no_application_fallback": True,
-                    "selected_qos_pair_record_count": len(app_relative_values),
-                    "source_type": "simulation_backend",
-                    "source_metrics": {{
-                        "cmr_mean": float(item["cmr_mean"]),
-                        "spatial_utilization_mean": spatial,
-                        "effective_utilization_mean": effective,
-                        "figure_11a_fidelity_source": "qiskit_aer.AerSimulator.run",
-                        "figure_11a_fitted_curve": False,
-                        "figure_11a_no_multiprogramming_fidelity": no_fid,
-                        "figure_11a_no_multiprogramming_unit_of_execution": no_mp_result.get("unit_of_execution"),
-                        "figure_11a_no_multiprogramming_source_role": no_mp_result.get("source_role"),
-                        "figure_11a_no_multiprogramming_selected_qubits": no_mp_result.get("selected_qubits"),
-                        "figure_11a_baseline_multiprogramming_fidelity": baseline_fid,
-                        "figure_11a_qos_multiprogramming_fidelity": qos_fid,
-                        "original_effective_utilization_percent_values": raw_effective_values,
-                        "figure_11b_effective_utilization_source": "qos.multiprogrammer.Multiprogrammer.effective_utilization",
-                        "figure_11b_simulation_backed": True,
-                        "figure_11b_fitted_curve": False,
-                        "figure_11b_selection_mode": (selected_pair_result.get("selection_mode") or "ranked_topk"),
-                        "figure_11b_application_coverage_required": False,
-                        "figure_11c_selection_mode": "per_application_ranked_representative",
-                        "figure_11c_pairs_per_application": n_fig11c_pairs_per_application,
-                        "figure_11c_selected_pair_labels": fig11c_app_record.get("selected_pair_labels") or [],
-                        "figure_11c_pair_contains_application": bool(fig11c_app_record.get("pair_contains_application")),
-                        "figure_11c_simulation_reuse": bool(fig11c_app_record.get("simulation_reuse")),
-                        "figure_11c_simulation_reuse_scope": fig11c_app_record.get("simulation_reuse_scope"),
-                        "matching_score_mean": matching,
-                        "solo_simulated_fidelity": simulation_result["solo_fidelity"],
-                        "qos_simulated_fidelity": simulation_result["qos_fidelity"],
-                        "shots": simulation_result["shots"],
-                        "selected_qubits": simulation_result.get("selected_qubits"),
-                        "component_qubits": simulation_result.get("component_qubits"),
-                        "scaled_simulation": simulation_result.get("scaled_simulation"),
-                        "scaled_threshold_qubits": simulation_result.get("scaled_threshold_qubits"),
-                        "scaled_threshold_qubit_sequence": simulation_result.get("scaled_threshold_qubit_sequence"),
-                        "full_24q_not_run_due_timeout": simulation_result.get("full_24q_not_run_due_timeout"),
-                        "debug_max_sim_qubits": simulation_result.get("debug_max_sim_qubits"),
-                        "debug_threshold_qubits": simulation_result.get("debug_threshold_qubits"),
-                        "simulation_fidelity_estimator": simulation_result.get("estimator", "local_marginal_count_fidelity"),
-                        "noise_model_source": simulation_result.get("noise_model_source"),
-                        "noise_model_backend": simulation_result.get("noise_model_backend"),
-                        "noise_qpu": simulation_result.get("noise_qpu"),
-                        "noise_2q_mode": simulation_result.get("noise_2q_mode"),
-                        "noise_p2": simulation_result.get("noise_p2"),
-                        "noise_readout": simulation_result.get("noise_readout"),
-                        "utilization_noise_model_found": simulation_result.get("utilization_noise_model_found"),
-                        "utilization_noise_source": simulation_result.get("utilization_noise_source"),
-                        "partial_reproduction": simulation_result.get("partial_reproduction"),
-                        "limitation": simulation_result.get("limitation"),
-                        "noise": simulation_result["noise"],
-                    }},
-                }}
-            )
         result["results"].append(
             {{
                 "utilization": threshold,
@@ -2491,31 +2719,36 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
     application_coverage_complete = bool(result.get("fig11c_application_coverage_complete"))
     result["metric_provenance"] = {{
         "relative_fidelity": {{
-            "unit_of_execution": "per_application_representative_pair",
+            "shots": _simulation_shots(),
+            "unit_of_execution": "selected_pair_set",
             "execution_mode": "multiprogrammed_joint_simulation",
             "reference_mode": "solo_simulation",
             "formula": "joint_execution_fidelity / solo_execution_fidelity",
-            "bundle_source": "per_application_candidate_search",
+            "bundle_source": "selected_pair_sets_by_threshold",
             "joint_circuit_source": "qiskit.QuantumCircuit.compose",
             "crosstalk_model": "none_extra_beyond_joint_noisy_simulation",
             "baseline_layout_policy": "consecutive_layout",
             "qos_layout_policy": "error_aware_non_overlapping_layout",
             "baseline_qos_separate_simulation_paths": True,
             "pair_selection_sources": ["qos.multiprogrammer.Multiprogrammer.get_matching_score_ranked_candidate_pairs"],
-            "selection_mode": "per_application_ranked_representative",
+            "selection_mode": "ranked_stratified_per_application",
             "fig11b_selection_mode": "ranked_topk",
             "fig11b_application_coverage_required": False,
             "fig11b_pair_set_reused_for_fig11c": False,
-            "fig11c_pairs_per_application": n_fig11c_pairs_per_application,
-            "same_attempt_simulation_record_reuse_allowed": True,
+            "fig11c_min_unique_pairs_per_application": fig11c_min_pairs_per_app,
+            "pairs_per_util": n_pairs_per_util,
+            "pair_count_policy": "per_application_min_unique_pairs_then_top_k_fill",
+            "aggregation": "per_application_mean_from_selected_pair_components",
             "external_cache_used": False,
             "selected_bundle_count": selected_bundle_count,
             "proxy_substitution": relative_fidelity_proxy_substitution,
             "semantic_downgrade": relative_fidelity_semantic_downgrade,
-            "per_application_source": "per_application_ranked_representative_pair_records",
+            "per_application_source": "fig11c_stratified_qos_pair_set_component_records",
             "no_application_fallback": True,
+            "application_coverage_required": True,
             "application_coverage_complete": application_coverage_complete,
             "application_coverage_by_threshold": application_coverage_by_threshold,
+            "no_application_breakdown": False,
             "semantic_map": (SEMANTIC_MAP.get("relative_fidelity") if isinstance(SEMANTIC_MAP, dict) else None),
         }}
     }}
@@ -2523,6 +2756,7 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
         "figure_11a": {{
             "fidelity": {{
             **fidelity_source,
+            "shots": _simulation_shots(),
             "source_type": "simulation_backend",
             "source": "qiskit_aer.AerSimulator.run",
             "noise_model_source": noise_model_info.get("source"),
@@ -2547,6 +2781,7 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
         "figure_11b": {{
             "effective_utilization": {{
             **effective_source,
+            "shots": _simulation_shots(),
             "source_type": "simulation_backed_repo_method",
             "post_processing": ["filter_to_successful_pair_joint_simulation", "original_percent_to_fraction", "aggregate_mean_by_target_utilization"],
             "raw_inputs": ["qos.multiprogrammer.Multiprogrammer.effective_utilization", "qos.multiprogrammer.tools.bundle_qernels", "qiskit_aer.AerSimulator.run"],
@@ -2563,6 +2798,7 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
         "figure_11c": {{
             "relative_fidelity": {{
             **_metric_source_for("relative", "fidelity"),
+            "shots": _simulation_shots(),
             "source_type": "simulation_backend",
             "source": "qiskit_aer.AerSimulator.run",
             "noise_model_source": noise_model_info.get("source"),
@@ -2576,28 +2812,32 @@ def _execute_benchmark_original_metrics(workspace_root: Path) -> dict:
             "utilization_noise_source": noise_model_info.get("utilization_noise_source"),
             "partial_reproduction": bool(noise_model_info.get("partial_reproduction")),
             "limitation": noise_model_info.get("limitation"),
-            "unit_of_execution": "per_application_representative_pair",
+            "unit_of_execution": "selected_pair_set",
             "execution_mode": "multiprogrammed_joint_simulation",
             "reference_mode": "solo_simulation",
             "formula": "joint_execution_fidelity / solo_execution_fidelity",
-            "bundle_source": "per_application_candidate_search",
+            "bundle_source": "selected_pair_sets_by_threshold",
             "joint_circuit_source": "qos.types.types.Qernel.append_circuit",
             "pair_selection_sources": result["metric_provenance"]["relative_fidelity"]["pair_selection_sources"],
-            "selection_mode": "per_application_ranked_representative",
+            "selection_mode": "ranked_stratified_per_application",
             "fig11b_pair_set_reused": False,
-            "pairs_per_application": n_fig11c_pairs_per_application,
-            "same_attempt_simulation_record_reuse_allowed": True,
+            "fig11c_min_unique_pairs_per_application": fig11c_min_pairs_per_app,
+            "pairs_per_util": n_pairs_per_util,
+            "pair_count_policy": "per_application_min_unique_pairs_then_top_k_fill",
+            "aggregation": "per_application_mean_from_selected_pair_components",
             "external_cache_used": False,
             "proxy_substitution": relative_fidelity_proxy_substitution,
             "semantic_downgrade": relative_fidelity_semantic_downgrade,
-            "per_application_source": "per_application_ranked_representative_pair_records",
+            "per_application_source": "fig11c_stratified_qos_pair_set_component_records",
             "no_application_fallback": True,
+            "application_coverage_required": True,
             "application_coverage_complete": application_coverage_complete,
             "application_coverage_by_threshold": application_coverage_by_threshold,
+            "no_application_breakdown": False,
             "baseline_layout_policy": "consecutive_layout",
             "qos_layout_policy": "error_aware_non_overlapping_layout",
             "baseline_qos_separate_simulation_paths": True,
-            "post_processing": ["simulation_only_qpu_replacement", "qiskit_backend_noise_model", "pair_joint_full_count_distribution_hellinger_fidelity", "joint_execution_relative_to_solo_reference", "per_application_bars_from_ranked_representative_pairs"],
+            "post_processing": ["simulation_only_qpu_replacement", "qiskit_backend_noise_model", "pair_joint_full_count_distribution_hellinger_fidelity", "joint_execution_relative_to_solo_reference", "per_application_mean_from_selected_pair_components"],
             "raw_inputs": ["qiskit.QuantumCircuit.compose", "qiskit_aer.AerSimulator.run", "qos_agent.generated_noise_model.ibm_preset_depolarizing_readout", "qos.multiprogrammer.Multiprogrammer.get_matching_score"],
             }},
         }},
@@ -2685,15 +2925,19 @@ def _render_fig11_figures(output_dir: Path, metrics: dict) -> dict:
         width = min(0.075, 0.78 / max(len(applications), 1))
         for app_idx, app in enumerate(applications):
             values = []
+            errors = []
             for threshold in thresholds:
                 matched = 0.0
+                err = 0.0
                 for item in by_app:
                     if str(item.get("application", "")) == app and abs(float(item.get("threshold", -1.0)) - threshold) < 1e-9:
                         matched = float(item.get("relative_fidelity", 0.0))
+                        err = float(item.get("relative_fidelity_std", 0.0))
                         break
                 values.append(matched)
+                errors.append(err)
             offset = (app_idx - (len(applications) - 1) / 2) * width
-            ax.bar([value + offset for value in x], values, width, label=app, color=colors[app_idx], edgecolor="#27313C", linewidth=0.4)
+            ax.bar([value + offset for value in x], values, width, yerr=errors, capsize=2, label=app, color=colors[app_idx], edgecolor="#27313C", linewidth=0.4)
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_ylim(0.0, 1.2)
@@ -2732,10 +2976,12 @@ def _render_fig11_figures(output_dir: Path, metrics: dict) -> dict:
 
 
 def main() -> int:
+    global PARTIAL_METRICS_PATH
     parser = argparse.ArgumentParser()
     parser.add_argument("--metrics-path", required=True)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
+    PARTIAL_METRICS_PATH = Path(args.metrics_path).with_name("partial_simulation_checkpoint.json")
 
     workspace_root = Path(os.environ.get("REPRO_WORKSPACE_ROOT") or os.getcwd()).resolve()
     if str(workspace_root) not in sys.path:
@@ -2783,6 +3029,7 @@ def main() -> int:
     metrics = {{
         "success": success,
         "simulation_only": True,
+        "simulation_shots": _simulation_shots(),
         "reproduction_status": "partial" if benchmark_execution.get("partial_reproduction") else "complete",
         "partial_reproduction": bool(benchmark_execution.get("partial_reproduction")),
         "scaled_simulation": bool(benchmark_execution.get("scaled_simulation")),
@@ -2802,6 +3049,7 @@ def main() -> int:
         "methods_count": len(benchmark_execution.get("methods") or []),
         "application_count": len(benchmark_execution.get("applications") or []),
         "relative_fidelity_application_count": len(benchmark_execution.get("relative_fidelity_by_application") or []),
+        "relative_fidelity_utilization_count": len(benchmark_execution.get("relative_fidelity_by_utilization") or []),
         "applications": benchmark_execution.get("applications") or [],
         "methods_present": {{
             method: method in (benchmark_execution.get("methods") or [])
@@ -2809,6 +3057,10 @@ def main() -> int:
         }},
         "results": benchmark_execution.get("results") or [],
         "relative_fidelity_by_application": benchmark_execution.get("relative_fidelity_by_application") or [],
+        "relative_fidelity_by_utilization": benchmark_execution.get("relative_fidelity_by_utilization") or [],
+        "selected_pair_simulation_records_by_threshold": benchmark_execution.get("selected_pair_simulation_records_by_threshold") or {{}},
+        "simulation_timing_by_threshold": benchmark_execution.get("simulation_timing_by_threshold") or [],
+        "simulation_timing_by_threshold_map": benchmark_execution.get("simulation_timing_by_threshold_map") or {{}},
         "metric_provenance": benchmark_execution.get("metric_provenance") or {{}},
         "metric_map": METRIC_MAP,
         "semantic_map": SEMANTIC_MAP,
@@ -2898,11 +3150,12 @@ def main() -> int:
                         for qubits in (metrics.get("threshold_selected_qubit_sequence") or [])
                     ],
                     "applications": metrics.get("applications") or [],
-                    "aggregation": "none_per_application_by_utilization_target",
+                    "aggregation": "per_application_mean_from_selected_pair_components",
                     "grouping": "utilization_target_outer_application_inner",
                     "bars_per_group": len(metrics.get("applications") or []),
                     "bar_count": len(metrics.get("relative_fidelity_by_application") or []),
-                    "y_axis": "Relative fidelity",
+                    "y_axis": "Rel. Fidelity",
+                    "per_application_source": "fig11c_stratified_qos_pair_set_component_records",
                 }},
             }},
         }}

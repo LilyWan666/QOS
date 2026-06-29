@@ -1,0 +1,56 @@
+{
+  "figure_id": "qos_physical_qpu_env_probe",
+  "paper_claim": "Physical QPU records may be used as environment evidence for proxy verification, but they are not strict Fig. 11 simulation substitutes.",
+  "expected_trend": "The probe must validate copied physical QPU records, preserve backend identity, and declare hellinger_mean as the physical metric source.",
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mode_is_physical_qpu_env_probe",
+      "path": "execution_mode",
+      "type": "equals",
+      "value": "physical_qpu_env_probe"
+    },
+    {
+      "id": "not_strict_success",
+      "path": "not_fig11_strict_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "not_simulation_substitute",
+      "path": "strict_fig11_simulation_substitute",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "physical_kind",
+      "path": "provenance.kind",
+      "type": "equals",
+      "value": "physical_qpu_measurement"
+    },
+    {
+      "id": "metric_source_hellinger",
+      "path": "metric_source",
+      "type": "equals",
+      "value": "hellinger_mean"
+    },
+    {
+      "id": "shots_8192",
+      "path": "shots",
+      "type": "equals",
+      "value": 8192
+    },
+    {
+      "id": "records_present",
+      "path": "record_count",
+      "type": "numeric_gte",
+      "value": 1
+    }
+  ],
+  "pass_rule": "all"
+}

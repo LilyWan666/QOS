@@ -16,7 +16,11 @@ Thumbs.db
 *.log
 *.out
 *.err
+gemini_review.md
 slurm-*.out
+*.slurm
+!*.slurm.example
+evaluation/agent_framework/reproduce/submit_reproduce_agent_*.sh
 evaluation/openevolve_pairing/pairing_metadata/
 evaluation/openevolve_pairing/*pairing_compare_*.png
 evaluation/openevolve_pairing/test_corr*.txt
@@ -59,3 +63,10 @@ controller_envs/
 evaluation/agent_target_search/*
 
 rust/temp/
+QAgent/
+third_party/openevolve/
+
+# ---- local physical QPU measurement payloads ----
+# Keep qpu_env README/manifest/env files trackable; do not commit copied per-pair
+# IBM job result payloads into the source repository.
+qpu_env/physical_qpu_jobs/*/util*/fidelity/*.json

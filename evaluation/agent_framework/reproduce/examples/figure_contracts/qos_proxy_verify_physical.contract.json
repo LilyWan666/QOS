@@ -1,0 +1,55 @@
+{
+  "figure_id": "qos_proxy_verify_physical",
+  "paper_claim": "Physical QPU data verifies proxy behavior in verify-only mode and must not become the strict Fig. 11 success criterion.",
+  "expected_trend": "The verifier reports rank agreement against physical hellinger_mean records while preserving strict simulation/proxy/physical provenance separation.",
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mode_is_proxy_verify_physical",
+      "path": "execution_mode",
+      "type": "equals",
+      "value": "proxy_verify_physical"
+    },
+    {
+      "id": "verify_only",
+      "path": "physical_qpu_objective_mode",
+      "type": "equals",
+      "value": "verify_only"
+    },
+    {
+      "id": "not_strict_success",
+      "path": "not_fig11_strict_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "not_simulation_substitute",
+      "path": "strict_fig11_simulation_substitute",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "strict_contract_not_satisfied",
+      "path": "verification.fig11_strict_contract_satisfied",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "physical_metric_source_hellinger",
+      "path": "verification.physical_metric_source",
+      "type": "equals",
+      "value": "hellinger_mean"
+    },
+    {
+      "id": "physical_rank_comparison_declared",
+      "path": "verification.physical_rank_comparison",
+      "type": "exists"
+    }
+  ],
+  "pass_rule": "all"
+}

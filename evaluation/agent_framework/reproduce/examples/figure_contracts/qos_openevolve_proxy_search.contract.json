@@ -1,0 +1,590 @@
+{
+  "figure_id": "qos_openevolve_proxy_search",
+  "paper_claim": "When strict 8192-shot Fig. 11 simulation or QPU execution is too slow, QOS-Agent may substitute the expensive fidelity-like metric with a pre-evolution proxy metric and then run a separate OpenEvolve search workflow; this is not a Fig. 11 strict reproduction success path.",
+  "expected_trend": "The evolution workflow must use the OpenEvolve source checked out under third_party/openevolve, must clearly mark proxy/evolution outputs as non-strict Fig. 11 artifacts, and must distinguish the pre-evolution metric proxy from the evolved scoring function.",
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mode_is_openevolve_proxy_search",
+      "path": "execution_mode",
+      "type": "equals",
+      "value": "openevolve_proxy_search"
+    },
+    {
+      "id": "not_fig11_strict_success",
+      "path": "not_fig11_strict_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "openevolve_source_root_is_third_party_checkout",
+      "path": "openevolve.source_root",
+      "type": "equals",
+      "value": "third_party/openevolve"
+    },
+    {
+      "id": "openevolve_git_tag_declared",
+      "path": "openevolve.git_tag",
+      "type": "equals",
+      "value": "v0.2.27"
+    },
+    {
+      "id": "openevolve_entrypoint_declared",
+      "path": "openevolve.entrypoint",
+      "type": "in_set",
+      "values": [
+        "openevolve.cli:main",
+        "openevolve.api:run_evolution",
+        "openevolve.api:evolve_function"
+      ]
+    },
+    {
+      "id": "evolve_target_found",
+      "path": "target_functions.evolve.found",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "verify_target_found",
+      "path": "target_functions.verify.found",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "eval_shots_8192",
+      "path": "evolution_config.eval_shots",
+      "type": "equals",
+      "value": 8192
+    },
+    {
+      "id": "proxy_metric_declared",
+      "path": "evolution_config.pareto_second_metric",
+      "type": "equals",
+      "value": "proxy_estimated_fidelity"
+    },
+    {
+      "id": "proxy_feature_declared",
+      "path": "evolution_config.proxy_feature",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_metric_proposal_is_llm_semantic",
+      "path": "evolution_config.pre_evolution_proxy_validation.candidate_source",
+      "type": "in_set",
+      "values": [
+        "llm_semantic_metric_proposal",
+        "llm_semantic_feature_validation"
+      ]
+    },
+    {
+      "id": "proxy_feature_validation_bundle_declared",
+      "path": "evolution_config.proxy_feature_semantic_validation.selected_feature_names",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_metric_proposal_declared",
+      "path": "evolution_config.proxy_metric_semantic_proposal.selection_mode",
+      "type": "equals",
+      "value": "llm_semantic_metric_proposal"
+    },
+    {
+      "id": "proxy_semantic_factor_brainstorm_declared",
+      "path": "evolution_config.proxy_semantic_factor_brainstorm.brainstorm_mode",
+      "type": "equals",
+      "value": "llm_semantic_factor_brainstorm"
+    },
+    {
+      "id": "proxy_semantic_factors_exist",
+      "path": "evolution_config.proxy_semantic_factor_brainstorm.semantic_factors",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_metric_proposal_not_manual",
+      "path": "evolution_config.proxy_metric_semantic_proposal.manual_proxy_source_used",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "proxy_feature_materialization_uses_benchmark_metadata",
+      "path": "evolution_config.feature_materialization.source",
+      "type": "equals",
+      "value": "benchmark_qasm_metadata"
+    },
+    {
+      "id": "proxy_feature_materialization_forbids_placeholders",
+      "path": "evolution_config.feature_materialization.placeholder_constant_features_forbidden",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "objective_mutates_auto_discovered_qos_target",
+      "path": "evolution_config.objective_source",
+      "type": "equals",
+      "value": "openevolve_mutates_auto_discovered_qos_target"
+    },
+    {
+      "id": "manual_seed_not_used",
+      "path": "evolution_config.manual_seed_used",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "initial_seed_is_normalized_qos",
+      "path": "evolution_config.initial_seed.mode",
+      "type": "equals",
+      "value": "manual_qos_normalized"
+    },
+    {
+      "id": "seed_utilization_scale_is_normalized",
+      "path": "evolution_config.seed_effective_utilization_scale.normalization",
+      "type": "equals",
+      "value": "percent_to_unit_interval_if_value_gt_1"
+    },
+    {
+      "id": "qos_evolution_target_declared",
+      "path": "evolution_config.qos_evolution_target.entrypoint",
+      "type": "exists"
+    },
+    {
+      "id": "qos_evolution_target_is_repository_source",
+      "path": "evolution_config.qos_evolution_target.source_path",
+      "type": "exists"
+    },
+    {
+      "id": "qos_evolution_target_function_declared",
+      "path": "evolution_config.qos_evolution_target.function",
+      "type": "exists"
+    },
+    {
+      "id": "target_selection_is_llm_semantic",
+      "path": "evolution_config.target_selection.mode",
+      "type": "equals",
+      "value": "llm_semantic_selection"
+    },
+    {
+      "id": "target_selection_succeeded",
+      "path": "evolution_config.target_selection.success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "target_selection_has_semantic_evidence",
+      "path": "evolution_config.target_selection.semantic_evidence",
+      "type": "exists"
+    },
+    {
+      "id": "evaluator_selection_is_paper_metric_binding",
+      "path": "evolution_config.evaluator_selection.mode",
+      "type": "equals",
+      "value": "paper_metric_semantic_binding"
+    },
+    {
+      "id": "evaluator_selection_succeeded",
+      "path": "evolution_config.evaluator_selection.success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "paper_metric_basis_declared",
+      "path": "evolution_config.paper_metric_basis",
+      "type": "exists"
+    },
+    {
+      "id": "paper_metric_basis_target_is_pair_selection",
+      "path": "evolution_config.paper_metric_basis.selection_target",
+      "type": "equals",
+      "value": "multiprogramming_pair_selection"
+    },
+    {
+      "id": "paper_metric_basis_nominal_targets_are_not_objectives",
+      "path": "evolution_config.paper_metric_basis.nominal_targets_are_regimes_not_objectives",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "paper_metric_basis_uses_pareto_rank",
+      "path": "evolution_config.paper_metric_basis.aggregation",
+      "type": "equals",
+      "value": "pareto_rank"
+    },
+    {
+      "id": "paper_metric_basis_uses_topk_selection",
+      "path": "evolution_config.paper_metric_basis.selection_operator",
+      "type": "equals",
+      "value": "topk"
+    },
+    {
+      "id": "paper_metric_basis_forbids_unweighted_scalarization",
+      "path": "evolution_config.paper_metric_basis.forbid_weighted_sum_without_paper_weight",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "evaluator_strategy_uses_pareto_rank",
+      "path": "evolution_config.evaluator_selection.aggregation",
+      "type": "equals",
+      "value": "pareto_rank"
+    },
+    {
+      "id": "evaluator_strategy_uses_topk_selection",
+      "path": "evolution_config.evaluator_selection.selection_operator",
+      "type": "equals",
+      "value": "topk"
+    },
+    {
+      "id": "small_to_large_seed_transfer_declared",
+      "path": "evolution_config.seed_transfer.strategy",
+      "type": "equals",
+      "value": "small_to_large"
+    },
+    {
+      "id": "seed_transfer_uses_pair_level_ground_truth_sources",
+      "path": "evolution_config.seed_transfer.uses_pair_level_ground_truth_sources",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "seed_transfer_keeps_proxy_non_strict",
+      "path": "evolution_config.seed_transfer.strict_fig11_success",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "evolution_is_not_seed_objective_only",
+      "path": "evolution_config.seed_objective_only",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "mutation_protocol_is_whole_block",
+      "path": "evolution_config.mutation_protocol.mode",
+      "type": "equals",
+      "value": "whole_evolve_block_replace"
+    },
+    {
+      "id": "mutation_protocol_requires_hash_change",
+      "path": "evolution_config.mutation_protocol.requires_code_hash_change",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mutation_protocol_signature_declared",
+      "path": "evolution_config.mutation_protocol.required_signature",
+      "type": "exists"
+    },
+    {
+      "id": "agent_parameter_profile_used",
+      "path": "evolution_config.agent_parameter_profile_used",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "manual_parameter_probe_not_used",
+      "path": "evolution_config.manual_parameter_probe_used",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "agent_proxy_multiutil_profile_selected",
+      "path": "evolution_config.parameter_profile",
+      "type": "equals",
+      "value": "qos_fig11_proxy_multiutil_default"
+    },
+    {
+      "id": "fig11_training_data_schema_declared",
+      "path": "evolution_config.training_data_schema",
+      "type": "equals",
+      "value": "ibm_torino_physical_pair_records"
+    },
+    {
+      "id": "agent_objective_is_physical_validated_selection",
+      "path": "evolution_config.agent_objective.name",
+      "type": "equals",
+      "value": "physical_validated_pair_selection"
+    },
+    {
+      "id": "proxy_objective_selection_target_is_pair_selection",
+      "path": "evolution_config.agent_objective.selection_target",
+      "type": "equals",
+      "value": "multiprogramming_pair_selection"
+    },
+    {
+      "id": "proxy_objective_includes_utilization_and_fidelity",
+      "path": "evolution_config.agent_objective.ground_truth_metrics",
+      "type": "equals",
+      "value": [
+        "effective_utilization",
+        "proxy_estimated_fidelity"
+      ]
+    },
+    {
+      "id": "proxy_objective_uses_selected_topk_average_pareto_rank",
+      "path": "evolution_config.agent_objective.aggregation",
+      "type": "equals",
+      "value": "selected_topk_average_pareto_rank"
+    },
+    {
+      "id": "proxy_objective_primary_score_is_inverse_avg_rank",
+      "path": "evolution_config.agent_objective.primary_score",
+      "type": "equals",
+      "value": "inv_avg_pareto_rank"
+    },
+    {
+      "id": "proxy_objective_is_topk_selection",
+      "path": "evolution_config.agent_objective.topk_selection",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "proxy_objective_forbids_front_overlap_gate",
+      "path": "evolution_config.agent_objective.forbid_objective_gating_by_front_overlap",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "proxy_objective_forbids_required_rank1_overlap",
+      "path": "evolution_config.agent_objective.forbid_required_rank1_overlap",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "evaluator_primary_score_is_inverse_avg_rank",
+      "path": "evolution_config.objective_score_definition.primary_score",
+      "type": "equals",
+      "value": "inv_avg_pareto_rank"
+    },
+    {
+      "id": "evaluator_aggregation_is_selected_topk_average_pareto_rank",
+      "path": "evolution_config.objective_score_definition.aggregation",
+      "type": "equals",
+      "value": "selected_topk_average_pareto_rank"
+    },
+    {
+      "id": "evaluator_front_overlap_does_not_gate_score",
+      "path": "evolution_config.objective_score_definition.front_overlap_affects_validation_score",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "evaluator_does_not_require_rank1_front_overlap",
+      "path": "evolution_config.objective_score_definition.requires_rank1_front_overlap",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "proxy_objective_forbids_single_metric_fidelity_only",
+      "path": "evolution_config.agent_objective.forbid_single_metric_fidelity_only",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "objective_requirement_primary_metric_is_utilization",
+      "path": "evolution_config.objective_requirements.primary_metric",
+      "type": "equals",
+      "value": "effective_utilization"
+    },
+    {
+      "id": "objective_requirement_expensive_metric_is_torino_hellinger",
+      "path": "evolution_config.objective_requirements.expensive_metric",
+      "type": "equals",
+      "value": "ibm_torino.hellinger_mean"
+    },
+    {
+      "id": "objective_requirement_uses_physical_qpu_direct_metric",
+      "path": "evolution_config.objective_requirements.direct_metric_source",
+      "type": "equals",
+      "value": "physical_qpu_pair_measurement"
+    },
+    {
+      "id": "physical_backend_filter_is_torino",
+      "path": "evolution_config.physical_backend_filter",
+      "type": "equals",
+      "value": "ibm_torino"
+    },
+    {
+      "id": "training_source_kind_is_physical_qpu",
+      "path": "evolution_config.training_source_kind",
+      "type": "equals",
+      "value": "physical_qpu"
+    },
+    {
+      "id": "training_label_metric_declared",
+      "path": "evolution_config.training_label_metric",
+      "type": "equals",
+      "value": "proxy_estimated_fidelity"
+    },
+    {
+      "id": "expensive_label_metric_declared",
+      "path": "evolution_config.expensive_label_metric",
+      "type": "equals",
+      "value": "ibm_torino.hellinger_mean"
+    },
+    {
+      "id": "proxy_role_is_pre_evolution_metric_substitute",
+      "path": "evolution_config.proxy_role",
+      "type": "equals",
+      "value": "pre_evolution_expensive_metric_substitute"
+    },
+    {
+      "id": "proxy_is_not_evolved_function",
+      "path": "evolution_config.proxy_is_evolved_function",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "pre_evolution_proxy_validation_present",
+      "path": "evolution_config.pre_evolution_proxy_validation.enabled",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "qpu_feedback_split_is_holdout",
+      "path": "evolution_config.qpu_feedback_split.mode",
+      "type": "equals",
+      "value": "holdout_by_util"
+    },
+    {
+      "id": "qpu_feedback_validation_records_present",
+      "path": "evolution_config.validation_record_count",
+      "type": "numeric_gte",
+      "value": 1
+    },
+    {
+      "id": "qpu_feedback_train_records_present",
+      "path": "evolution_config.train_record_count",
+      "type": "numeric_gte",
+      "value": 1
+    },
+    {
+      "id": "qpu_feedback_submission_is_manual_only",
+      "path": "qpu_validation_plan.automatic_qpu_submission",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "qpu_feedback_requires_human_approval",
+      "path": "qpu_validation_plan.requires_human_approval",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "objective_requirement_proxy_only_when_needed",
+      "path": "evolution_config.objective_requirements.proxy_policy",
+      "type": "equals",
+      "value": "use_proxy_only_when_direct_metric_is_unavailable_or_too_expensive"
+    },
+    {
+      "id": "objective_resolution_declares_proxy_substitution",
+      "path": "evolution_config.objective_resolution.mode",
+      "type": "equals",
+      "value": "proxy_substitution"
+    },
+    {
+      "id": "objective_resolution_triggered_by_expensive_simulation",
+      "path": "evolution_config.objective_resolution.trigger",
+      "type": "equals",
+      "value": "simulation_too_expensive"
+    },
+    {
+      "id": "objective_resolution_second_metric_is_proxy_estimated_fidelity",
+      "path": "evolution_config.objective_resolution.resolved_second_metric",
+      "type": "equals",
+      "value": "proxy_estimated_fidelity"
+    },
+    {
+      "id": "objective_resolution_proxy_feature_declared",
+      "path": "evolution_config.objective_resolution.proxy_feature",
+      "type": "exists"
+    },
+    {
+      "id": "top_k_ratio_declared",
+      "path": "evolution_config.agent_settings.top_k_ratio",
+      "type": "equals",
+      "value": "0.10"
+    },
+    {
+      "id": "multi_util_declared",
+      "path": "evolution_config.agent_settings.utilization_targets",
+      "type": "equals",
+      "value": "30:60:88"
+    },
+    {
+      "id": "external_csv_disabled_for_agent_training_data",
+      "path": "evolution_config.agent_settings.external_pair_csv_allowed",
+      "type": "equals",
+      "value": "false"
+    },
+    {
+      "id": "simulation_pair_ground_truth_loaded",
+      "path": "evolution_config.training_data_status",
+      "type": "equals",
+      "value": "pair_record_ground_truth"
+    },
+    {
+      "id": "training_records_present",
+      "path": "evolution_config.training_record_count",
+      "type": "numeric_gte",
+      "value": 1
+    },
+    {
+      "id": "simulation_ground_truth_reference_declared",
+      "path": "verification.simulation_ground_truth_reference",
+      "type": "exists"
+    },
+    {
+      "id": "verification_outputs_rank_comparison",
+      "path": "verification.rank_comparison",
+      "type": "exists"
+    },
+    {
+      "id": "fig11_strict_contract_not_satisfied_by_proxy",
+      "path": "verification.fig11_strict_contract_satisfied",
+      "type": "bool_equals",
+      "value": false
+    }
+  ],
+  "proxy_objective_requirements": {
+    "selection_target": "multiprogramming_pair_selection",
+    "primary_metric": "effective_utilization",
+    "expensive_metric": "ibm_torino.hellinger_mean",
+    "direct_metric_source": "physical_qpu_pair_measurement",
+    "proxy_policy": "use_proxy_only_when_direct_metric_is_unavailable_or_too_expensive",
+    "must_include_metrics": [
+      "effective_utilization",
+      "proxy_estimated_fidelity"
+    ],
+    "aggregation": "selected_topk_average_pareto_rank",
+    "primary_score": "inv_avg_pareto_rank",
+    "topk_selection": true,
+    "diagnostic_metrics": [
+      "rank_agreement",
+      "top_rank_overlap"
+    ],
+    "forbid_objective_gating_by_front_overlap": true,
+    "forbid_required_rank1_overlap": true,
+    "forbid_weighted_sum_without_paper_weight": true,
+    "forbid_single_metric_fidelity_only": true,
+    "notes": "Fig. 11 reports both effective utilization and fidelity/relative fidelity, so the proxy objective for pair selection must be multi-objective rather than fidelity-only."
+  },
+  "openevolve_requirements": {
+    "source_root": "third_party/openevolve",
+    "git_tag": "v0.2.27",
+    "allowed_entrypoints": [
+      "openevolve.cli:main",
+      "openevolve.api:run_evolution",
+      "openevolve.api:evolve_function"
+    ],
+    "forbidden_strict_fig11_inputs": [
+      "external_manual_openevolve_pairing_path",
+      "evaluation/openevolve_pairing",
+      "manual_openevolve_pairing_cache"
+    ],
+    "notes": "This contract is for the slow-simulation follow-up path only. It must not be used to mark Fig. 11 strict reproduction as successful. Agent profile parameters must come from the active recipe/contract, not from manual reproduction folders."
+  },
+  "pass_rule": "all"
+}

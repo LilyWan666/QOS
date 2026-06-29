@@ -51,12 +51,42 @@ ACTION_TO_TOOL = {
     "verify_claim": "tool_verify_claim.py",
     "figure_visual_compare": "tool_figure_visual_compare.py",
     "original_pipeline_probe": "tool_original_pipeline_probe.py",
+    "openevolve_target_probe": "tool_openevolve_target_probe.py",
+    "openevolve_target_semantic_select": "tool_openevolve_target_semantic_select.py",
+    "openevolve_evaluator_semantic_select": "tool_openevolve_evaluator_semantic_select.py",
+    "openevolve_param_probe": "tool_openevolve_param_probe.py",
+    "simulation_checkpoint_analyze": "tool_simulation_checkpoint_analyze.py",
+    "physical_qpu_env_probe": "tool_physical_qpu_env_probe.py",
+    "proxy_semantic_factor_brainstorm": "tool_proxy_semantic_factor_brainstorm.py",
+    "proxy_metric_semantic_propose": "tool_proxy_metric_semantic_propose.py",
+    "proxy_feature_semantic_validate": "tool_proxy_feature_semantic_validate.py",
+    "proxy_environment_predict": "tool_proxy_environment_predict.py",
+    "openevolve_proxy_search": "tool_openevolve_proxy_search.py",
+    "openevolve_slurm_submit": "tool_openevolve_slurm_submit.py",
+    "openevolve_slurm_collect": "tool_openevolve_slurm_collect.py",
+    "openevolve_proxy_verify": "tool_openevolve_proxy_verify.py",
+    "proxy_verify_physical": "tool_proxy_verify_physical.py",
     "render_artifacts": "tool_render_artifacts.py",
 }
 
 ACTION_PRIORITY = [
     "classify_failure",
     "original_pipeline_probe",
+    "openevolve_target_probe",
+    "openevolve_target_semantic_select",
+    "openevolve_evaluator_semantic_select",
+    "openevolve_param_probe",
+    "simulation_checkpoint_analyze",
+    "physical_qpu_env_probe",
+    "proxy_semantic_factor_brainstorm",
+    "proxy_metric_semantic_propose",
+    "proxy_feature_semantic_validate",
+    "proxy_environment_predict",
+    "openevolve_proxy_search",
+    "openevolve_slurm_submit",
+    "openevolve_slurm_collect",
+    "openevolve_proxy_verify",
+    "proxy_verify_physical",
     "repo_path_probe",
     "build_original_runner",
     "simulation_backend_fix",
@@ -105,6 +135,21 @@ OUTPUT_ROOT_ACTIONS = {
     "repo_path_probe",
     "original_pipeline_probe",
     "verify_claim",
+    "openevolve_target_probe",
+    "openevolve_target_semantic_select",
+    "openevolve_evaluator_semantic_select",
+    "openevolve_param_probe",
+    "simulation_checkpoint_analyze",
+    "physical_qpu_env_probe",
+    "proxy_semantic_factor_brainstorm",
+    "proxy_metric_semantic_propose",
+    "proxy_feature_semantic_validate",
+    "proxy_environment_predict",
+    "openevolve_proxy_search",
+    "openevolve_slurm_submit",
+    "openevolve_slurm_collect",
+    "openevolve_proxy_verify",
+    "proxy_verify_physical",
 }
 
 
@@ -113,8 +158,68 @@ def action_completed(state: dict[str, Any], action: str) -> bool:
         return isinstance(state.get("last_repo_path_probe"), dict)
     if action == "original_pipeline_probe":
         return isinstance(state.get("last_original_pipeline_probe"), dict)
+    if action == "openevolve_target_probe":
+        probe = state.get("last_openevolve_target_probe")
+        if not isinstance(probe, dict):
+            return False
+        qos_target = probe.get("qos_evolution_target") if isinstance(probe.get("qos_evolution_target"), dict) else {}
+        return bool(qos_target.get("found") and qos_target.get("candidates"))
+    if action == "openevolve_target_semantic_select":
+        selection = state.get("last_openevolve_target_semantic_selection")
+        return bool(isinstance(selection, dict) and selection.get("success") and selection.get("selected"))
+    if action == "openevolve_evaluator_semantic_select":
+        selection = state.get("last_openevolve_evaluator_semantic_selection")
+        return bool(isinstance(selection, dict) and selection.get("success") and selection.get("paper_metric_spec"))
+    if action == "openevolve_param_probe":
+        return isinstance(state.get("last_openevolve_param_probe"), dict)
+    if action == "simulation_checkpoint_analyze":
+        return isinstance(state.get("last_simulation_memory"), dict)
+    if action == "physical_qpu_env_probe":
+        payload = state.get("last_physical_qpu_env_probe")
+        return bool(isinstance(payload, dict) and payload.get("success"))
+    if action == "proxy_semantic_factor_brainstorm":
+        payload = state.get("last_proxy_semantic_factor_brainstorm")
+        return bool(isinstance(payload, dict) and payload.get("success") and payload.get("semantic_factors"))
+    if action == "proxy_metric_semantic_propose":
+        payload = state.get("last_proxy_metric_semantic_proposal")
+        return bool(isinstance(payload, dict) and payload.get("success") and payload.get("candidates"))
+    if action == "proxy_feature_semantic_validate":
+        payload = state.get("last_proxy_feature_semantic_validation")
+        return bool(isinstance(payload, dict) and payload.get("success") and payload.get("selected_feature_names"))
+    if action == "proxy_environment_predict":
+        payload = state.get("last_proxy_environment_predict")
+        phase = str(payload.get("phase") if isinstance(payload, dict) else "")
+        return bool(isinstance(payload, dict) and payload.get("success") and phase == "post_evolution")
     if action == "build_original_runner":
         return bool(str(state.get("original_runner_path") or "").strip())
+    if action == "openevolve_proxy_search":
+        payload = state.get("last_openevolve_proxy_search")
+        collect = state.get("last_openevolve_slurm_collect")
+        verify = state.get("last_openevolve_proxy_verify")
+        policy = ((payload or {}).get("evolution_config") or {}).get("artifact_policy") if isinstance(payload, dict) else {}
+        artifact_retry_available = (
+            isinstance(policy, dict)
+            and not bool(policy.get("include_artifacts"))
+            and (
+                (isinstance(collect, dict) and not collect.get("success"))
+                or (isinstance(verify, dict) and not verify.get("success"))
+            )
+        )
+        if artifact_retry_available:
+            return False
+        return bool(isinstance(payload, dict) and payload.get("success"))
+    if action == "openevolve_slurm_submit":
+        payload = state.get("last_openevolve_slurm_submit")
+        return bool(isinstance(payload, dict) and payload.get("success"))
+    if action == "openevolve_slurm_collect":
+        payload = state.get("last_openevolve_slurm_collect")
+        return bool(isinstance(payload, dict) and payload.get("success"))
+    if action == "openevolve_proxy_verify":
+        payload = state.get("last_openevolve_proxy_verify")
+        return bool(isinstance(payload, dict) and payload.get("success"))
+    if action == "proxy_verify_physical":
+        payload = state.get("last_proxy_verify_physical")
+        return bool(isinstance(payload, dict) and payload.get("success"))
     if action in {"runtime_env_select", "runtime_python_select"}:
         return bool(str(state.get("runtime_python_executable") or "").strip())
     return False
@@ -300,6 +405,35 @@ def choose_action_fallback(state: dict[str, Any], allowed_actions: list[str]) ->
         sort_keys=True,
         default=str,
     )
+    if "simulation_too_expensive" in classification_text:
+        for action in (
+            "physical_qpu_env_probe",
+            "openevolve_target_probe",
+            "openevolve_target_semantic_select",
+            "openevolve_evaluator_semantic_select",
+            "openevolve_param_probe",
+            "simulation_checkpoint_analyze",
+            "proxy_semantic_factor_brainstorm",
+            "proxy_metric_semantic_propose",
+            "proxy_feature_semantic_validate",
+            "proxy_environment_predict",
+            "openevolve_proxy_search",
+            "openevolve_slurm_submit",
+            "openevolve_slurm_collect",
+            "openevolve_proxy_verify",
+            "proxy_verify_physical",
+        ):
+            if action == "proxy_environment_predict":
+                prediction = state.get("last_proxy_environment_predict")
+                if (
+                    isinstance(prediction, dict)
+                    and prediction.get("phase") == "baseline"
+                    and not isinstance(state.get("last_openevolve_proxy_verify"), dict)
+                ):
+                    continue
+            if action in allowed_actions and not action_completed(state, action):
+                return action
+
     missing_generated_runner_metrics = (
         ("metrics_parse_failure" in classification_text or "metric_validation_failure" in classification_text)
         and (
@@ -353,6 +487,22 @@ def choose_action_fallback(state: dict[str, Any], allowed_actions: list[str]) ->
         if action in allowed_actions and not action_completed(state, action):
             return action
     return allowed_actions[0] if allowed_actions else "terminal_failed"
+
+
+def simulation_timeout_recovery_active(state: dict[str, Any]) -> bool:
+    try:
+        text = json.dumps(
+            {
+                "last_classification": state.get("last_classification"),
+                "last_failure_classification": state.get("last_failure_classification"),
+                "last_attempt_payload": state.get("last_attempt_payload"),
+            },
+            sort_keys=True,
+            default=str,
+        )
+    except TypeError:
+        text = str(state)
+    return "simulation_too_expensive" in text
 
 
 def choose_action_with_model(
@@ -418,6 +568,9 @@ def run_tool_action(
     target_python_executable: str,
     output_root: Path,
     cwd: Path,
+    api_base: str,
+    api_key: str,
+    model: str,
 ) -> dict[str, Any]:
     script = ACTION_TO_TOOL[action]
     command = [tool_python_executable, str(TOOLS_ROOT / script), "--state", str(state_path)]
@@ -427,9 +580,14 @@ def run_tool_action(
         command.extend(["--python-executable", target_python_executable])
     if action not in {"run_unit_tests", "run_regression_tests", "render_artifacts"}:
         command.extend(["--recipe", str(recipe_path)])
+    env = dict(os.environ)
+    env.setdefault("REPRO_AGENT_API_BASE", api_base)
+    env.setdefault("REPRO_AGENT_API_KEY", api_key)
+    env.setdefault("REPRO_AGENT_MODEL", model)
     proc = subprocess.run(
         command,
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -452,6 +610,11 @@ def run_tool_action(
 
 
 def infer_allowed_actions(state: dict[str, Any]) -> list[str]:
+    if simulation_timeout_recovery_active(state):
+        try:
+            return next_actions(state)
+        except Exception:
+            pass
     history = state.get("history")
     if isinstance(history, list) and history:
         last_payload = history[-1].get("payload", {}) if isinstance(history[-1], dict) else {}
@@ -525,7 +688,7 @@ def main() -> int:
             break
 
         decision_payload: dict[str, Any] = {"action": choose_action_fallback(state, allowed_actions)}
-        if endpoint_probe.get("ok", False):
+        if endpoint_probe.get("ok", False) and not simulation_timeout_recovery_active(state):
             try:
                 action, model_payload = choose_action_with_model(
                     api_base=args.api_base,
@@ -573,6 +736,9 @@ def main() -> int:
             target_python_executable=target_python_executable,
             output_root=run_dir,
             cwd=repo_root,
+            api_base=args.api_base,
+            api_key=args.api_key,
+            model=args.model,
         )
         step_record = {
             "step": step_index,

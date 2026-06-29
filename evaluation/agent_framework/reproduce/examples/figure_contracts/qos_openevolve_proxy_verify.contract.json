@@ -1,0 +1,76 @@
+{
+  "figure_id": "qos_openevolve_proxy_verify",
+  "paper_claim": "OpenEvolve proxy/evolution results are useful only when verified against simulation-grounded Fig. 11 selected-pair evidence; proxy artifacts alone must not count as strict Fig. 11 reproduction.",
+  "expected_trend": "The verifier must keep OpenEvolve outputs separate from Fig. 11 strict success, require an 8192-shot verification target, and report whether pair-level rank comparison was possible.",
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mode_is_openevolve_proxy_verify",
+      "path": "execution_mode",
+      "type": "equals",
+      "value": "openevolve_proxy_verify"
+    },
+    {
+      "id": "not_fig11_strict_success",
+      "path": "not_fig11_strict_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "eval_shots_target_8192",
+      "path": "verification.eval_shots_target",
+      "type": "equals",
+      "value": 8192
+    },
+    {
+      "id": "ground_truth_reference_declared",
+      "path": "verification.simulation_ground_truth_reference",
+      "type": "exists"
+    },
+    {
+      "id": "evolved_program_reference_declared",
+      "path": "verification.evolved_program_reference",
+      "type": "exists"
+    },
+    {
+      "id": "openevolve_collect_succeeded",
+      "path": "verification.openevolve_collect_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "evolved_program_mutated",
+      "path": "verification.mutation_applied",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "training_data_reference_declared",
+      "path": "verification.training_data_reference",
+      "type": "exists"
+    },
+    {
+      "id": "pair_rank_comparison_required",
+      "path": "verification.rank_comparison.status",
+      "type": "equals",
+      "value": "pair_rank_verified"
+    },
+    {
+      "id": "rank_comparison_method_declared",
+      "path": "verification.rank_comparison.method",
+      "type": "exists"
+    },
+    {
+      "id": "strict_contract_not_satisfied",
+      "path": "verification.fig11_strict_contract_satisfied",
+      "type": "bool_equals",
+      "value": false
+    }
+  ],
+  "pass_rule": "all"
+}

@@ -13,6 +13,18 @@
       "value": true
     },
     {
+      "id": "strict_simulation_shots_8192",
+      "path": "simulation_shots",
+      "type": "equals",
+      "value": 8192
+    },
+    {
+      "id": "relative_fidelity_provenance_shots_8192",
+      "path": "metric_provenance.relative_fidelity.shots",
+      "type": "equals",
+      "value": 8192
+    },
+    {
       "id": "noise_model_family_matches_previous_simulation",
       "path": "simulation_noise_model.noise_model_family",
       "type": "equals",
@@ -51,20 +63,20 @@
       "value": true
     },
     {
-      "id": "timeout_bounded_threshold_qubits_8_12_16",
+      "id": "threshold_qubits_8_16_24",
       "path": "threshold_selected_qubit_sequence",
       "type": "equals",
       "value": [
         8,
-        12,
-        16
+        16,
+        24
       ]
     },
     {
-      "id": "full_24q_timeout_reason_declared",
+      "id": "full_24q_not_marked_timeout_skipped",
       "path": "full_24q_not_run_due_timeout",
       "type": "bool_equals",
-      "value": true
+      "value": false
     },
     {
       "id": "three_thresholds",
@@ -85,6 +97,33 @@
       "value": 9
     },
     {
+      "id": "expected_benchmark_applications_present",
+      "path": "applications",
+      "type": "equals",
+      "value": [
+        "QAOA-R3",
+        "BV",
+        "GHZ",
+        "HS-1",
+        "QAOA-P1",
+        "QSVM",
+        "TL-1",
+        "VQE-1",
+        "W-STATE"
+      ],
+      "values": [
+        "QAOA-R3",
+        "BV",
+        "GHZ",
+        "HS-1",
+        "QAOA-P1",
+        "QSVM",
+        "TL-1",
+        "VQE-1",
+        "W-STATE"
+      ]
+    },
+    {
       "id": "fig11c_has_27_application_metric_records",
       "path": "relative_fidelity_application_count",
       "type": "equals",
@@ -96,7 +135,7 @@
       "type": "exists"
     },
     {
-      "id": "fig11c_first_relative_fidelity_numeric",
+      "id": "fig11c_first_application_relative_fidelity_numeric",
       "path": "relative_fidelity_by_application[0].relative_fidelity",
       "type": "numeric_between",
       "min": 0.0,
@@ -169,10 +208,10 @@
       "type": "monotonic_non_decreasing"
     },
     {
-      "id": "fig11c_metric_unit_is_per_application_representative_pair",
+      "id": "fig11c_metric_unit_is_selected_pair_set",
       "path": "metric_provenance.relative_fidelity.unit_of_execution",
       "type": "equals",
-      "value": "per_application_representative_pair"
+      "value": "selected_pair_set"
     },
     {
       "id": "fig11c_uses_joint_multiprogramming_simulation",
@@ -205,14 +244,14 @@
       "value": false
     },
     {
-      "id": "fig11c_per_application_source_is_ranked_representative_pair_records",
-      "path": "metric_provenance.relative_fidelity.per_application_source",
-      "type": "equals",
-      "value": "per_application_ranked_representative_pair_records"
+      "id": "fig11c_has_application_breakdown",
+      "path": "metric_provenance.relative_fidelity.no_application_breakdown",
+      "type": "bool_equals",
+      "value": false
     },
     {
-      "id": "fig11c_no_application_fallback",
-      "path": "metric_provenance.relative_fidelity.no_application_fallback",
+      "id": "fig11c_application_coverage_required",
+      "path": "metric_provenance.relative_fidelity.application_coverage_required",
       "type": "bool_equals",
       "value": true
     },
@@ -223,22 +262,22 @@
       "value": true
     },
     {
-      "id": "fig11c_pair_selection_is_per_application_ranked_representative",
+      "id": "fig11c_per_application_source_is_selected_pair_components",
+      "path": "metric_provenance.relative_fidelity.per_application_source",
+      "type": "equals",
+      "value": "fig11c_stratified_qos_pair_set_component_records"
+    },
+    {
+      "id": "fig11c_pair_set_is_separate_from_fig11b",
+      "path": "metric_provenance.relative_fidelity.fig11b_pair_set_reused_for_fig11c",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "fig11c_pair_selection_is_ranked_stratified_per_application",
       "path": "metric_provenance.relative_fidelity.selection_mode",
       "type": "equals",
-      "value": "per_application_ranked_representative"
-    },
-    {
-      "id": "fig11c_first_bar_comes_from_ranked_representative_pair_records",
-      "path": "relative_fidelity_by_application[0].per_application_source",
-      "type": "equals",
-      "value": "per_application_ranked_representative_pair_records"
-    },
-    {
-      "id": "fig11c_first_bar_no_fallback",
-      "path": "relative_fidelity_by_application[0].no_application_fallback",
-      "type": "bool_equals",
-      "value": true
+      "value": "ranked_stratified_per_application"
     },
     {
       "id": "figure_11a_valid_png",
@@ -261,18 +300,18 @@
   ],
   "metric_semantics": {
     "relative_fidelity": {
-      "unit_of_execution": "pair",
+      "unit_of_execution": "selected_pair_set",
       "execution_mode": "multiprogrammed_joint_simulation",
       "reference_mode": "solo_simulation",
       "formula": "joint_execution_fidelity / solo_execution_fidelity",
       "forbid_proxy_substitution": true,
       "fail_on_semantic_downgrade": true,
-      "notes": "The reproduction may reduce sample count, shots, or pair coverage for runtime, but it must preserve the metric's pair-level multiprogramming data-generating process."
+      "notes": "The reproduction may reduce sample count or shots for runtime, but it must preserve Fig. 11(c)'s per-application comparison by aggregating component relative fidelities from the selected QOS pair-set joint simulations. It must fail instead of falling back to representative single-pair or single-circuit application proxies."
     }
   },
-  "expected_trend": "QOS M/P should produce all three Fig. 11 outputs, cover all three methods and utilization thresholds, include nine benchmark applications and 27 per-application Fig. 11(c) bars, improve fidelity over the baselines, improve effective utilization over baseline M/P, preserve the pair-level multiprogramming semantics of relative fidelity, and keep relative fidelity loss bounded.",
+  "expected_trend": "QOS M/P should produce all three Fig. 11 outputs, cover all three methods and utilization thresholds, include nine benchmark applications, render Fig. 11(c) as per-application relative-fidelity bars by utilization, improve fidelity over the baselines, improve effective utilization over baseline M/P, preserve selected-pair-set multiprogramming semantics of relative fidelity, and keep relative fidelity loss bounded.",
   "figure_id": "qos_fig11_full",
-  "paper_claim": "Figure 11 compares No M/P, baseline M/P, and QOS M/P across 30%, 60%, and 88% utilization. Fig. 11(c) must be reproduced as per-application relative-fidelity bars for the nine benchmark applications under each utilization group, using simulation-only execution instead of real QPU access.",
+  "paper_claim": "Figure 11 compares No M/P, baseline M/P, and QOS M/P across utilization targets. Fig. 11(c) must be reproduced as per-application relative fidelity with respect to solo execution, using component records from selected QOS multiprogramming pair simulations under each utilization group and simulation-only execution instead of real QPU access.",
   "pass_rule": "all",
   "tolerance": {
     "avg_relative_fidelity_loss_max": 0.25,
@@ -288,8 +327,8 @@
         "expected_structure": {
           "x_groups": [
             "30% (8q)",
-            "45% (12q)",
-            "60% (16q)"
+            "60% (16q)",
+            "88% (24q)"
           ],
           "series": [
             "No M/P",
@@ -370,6 +409,14 @@
             "path": "metric_derivations.figure_11a.fidelity.source",
             "type": "contains_substring",
             "value": "qiskit_aer.AerSimulator.run",
+            "severity": "high",
+            "recommended_action": "build_original_runner"
+          },
+          {
+            "id": "fig11a_shots_8192",
+            "path": "metric_derivations.figure_11a.fidelity.shots",
+            "type": "equals",
+            "value": 8192,
             "severity": "high",
             "recommended_action": "build_original_runner"
           },
@@ -499,13 +546,13 @@
             "recommended_action": "build_original_runner"
           },
           {
-            "id": "fig11a_no_mp_threshold_qubits_8_12_16",
+            "id": "fig11a_no_mp_threshold_qubits_8_16_24",
             "path": "metric_derivations.figure_11a.fidelity.no_multiprogramming_selected_qubit_sequence",
             "type": "equals",
             "value": [
               8,
-              12,
-              16
+              16,
+              24
             ],
             "severity": "high",
             "recommended_action": "build_original_runner"
@@ -627,8 +674,8 @@
         "expected_structure": {
           "x_groups": [
             "30% (8q)",
-            "45% (12q)",
-            "60% (16q)"
+            "60% (16q)",
+            "88% (24q)"
           ],
           "series": [
             "Baseline M/P",
@@ -696,6 +743,14 @@
             "path": "metric_derivations.figure_11b.effective_utilization.simulation_backed",
             "type": "bool_equals",
             "value": true,
+            "severity": "high",
+            "recommended_action": "build_original_runner"
+          },
+          {
+            "id": "fig11b_shots_8192",
+            "path": "metric_derivations.figure_11b.effective_utilization.shots",
+            "type": "equals",
+            "value": 8192,
             "severity": "high",
             "recommended_action": "build_original_runner"
           },
@@ -788,12 +843,12 @@
       "figure_11c": {
         "output_path": "output_files.figure_11c",
         "min_png_size_bytes": 20000,
-        "paper_evidence": "Fig. 11(c) shows relative fidelity w.r.t. solo circuit execution per application under each utilization target.",
+        "paper_evidence": "Fig. 11(c) compares per-application relative fidelity w.r.t. solo circuit execution at each utilization target.",
         "expected_structure": {
           "x_groups": [
             "30% (8q)",
-            "45% (12q)",
-            "60% (16q)"
+            "60% (16q)",
+            "88% (24q)"
           ],
           "inner_bars": [
             "QAOA-R3",
@@ -809,50 +864,33 @@
           "bars_per_group": 9,
           "bar_count": 27,
           "grouping": "utilization_target_outer_application_inner",
-          "aggregation": "none_per_application_by_utilization_target",
+          "aggregation": "per_application_mean_from_selected_pair_components",
           "y_axis": "Rel. Fidelity"
         },
         "group_count_path": "threshold_count",
         "bars_per_group": 9,
-        "total_bars_path": "relative_fidelity_application_count",
+        "total_bars_path": "rendering.figures.figure_11c.bar_count",
         "structure_mismatch_action": "build_original_runner",
         "metric_expectations": [
           {
-            "id": "fig11c_nine_application_groups",
-            "path": "application_count",
-            "type": "equals",
-            "value": 9,
-            "recommended_action": "build_original_runner"
-          },
-          {
-            "id": "fig11c_preserves_27_application_metric_records",
+            "id": "fig11c_27_application_records",
             "path": "relative_fidelity_application_count",
             "type": "equals",
             "value": 27,
             "recommended_action": "build_original_runner"
           },
           {
-            "id": "fig11c_application_names",
-            "path": "applications",
-            "type": "contains_all",
-            "values": [
-              "QAOA-R3",
-              "BV",
-              "GHZ",
-              "HS-1",
-              "QAOA-P1",
-              "QSVM",
-              "TL-1",
-              "VQE-1",
-              "W-STATE"
-            ],
+            "id": "fig11c_rendering_27_application_bars",
+            "path": "rendering.figures.figure_11c.bar_count",
+            "type": "equals",
+            "value": 27,
             "recommended_action": "build_original_runner"
           },
           {
-            "id": "fig11c_rendering_not_aggregated",
+            "id": "fig11c_rendering_per_application_component_mean",
             "path": "rendering.figures.figure_11c.aggregation",
             "type": "equals",
-            "value": "none_per_application_by_utilization_target",
+            "value": "per_application_mean_from_selected_pair_components",
             "recommended_action": "render_artifacts"
           },
           {
@@ -863,11 +901,20 @@
             "recommended_action": "render_artifacts"
           },
           {
-            "id": "fig11c_rendering_bar_count",
-            "path": "rendering.figures.figure_11c.bar_count",
+            "id": "fig11c_per_application_source_is_selected_pair_components",
+            "path": "metric_derivations.figure_11c.relative_fidelity.per_application_source",
             "type": "equals",
-            "value": 27,
-            "recommended_action": "render_artifacts"
+            "value": "fig11c_stratified_qos_pair_set_component_records",
+            "severity": "high",
+            "recommended_action": "build_original_runner"
+          },
+          {
+            "id": "fig11c_application_coverage_complete",
+            "path": "metric_derivations.figure_11c.relative_fidelity.application_coverage_complete",
+            "type": "bool_equals",
+            "value": true,
+            "severity": "high",
+            "recommended_action": "build_original_runner"
           },
           {
             "id": "fig11c_uses_full_count_distribution_fidelity",
@@ -878,10 +925,10 @@
             "recommended_action": "build_original_runner"
           },
           {
-            "id": "fig11c_selection_is_per_application_ranked_representative",
+            "id": "fig11c_selection_is_ranked_stratified_per_application",
             "path": "metric_derivations.figure_11c.relative_fidelity.selection_mode",
             "type": "equals",
-            "value": "per_application_ranked_representative",
+            "value": "ranked_stratified_per_application",
             "severity": "high",
             "recommended_action": "build_original_runner"
           },
@@ -898,6 +945,14 @@
             "path": "metric_derivations.figure_11c.relative_fidelity.noise_model_source",
             "type": "not_contains_substring",
             "value": "test.reproduce_fig11",
+            "severity": "high",
+            "recommended_action": "build_original_runner"
+          },
+          {
+            "id": "fig11c_shots_8192",
+            "path": "metric_derivations.figure_11c.relative_fidelity.shots",
+            "type": "equals",
+            "value": 8192,
             "severity": "high",
             "recommended_action": "build_original_runner"
           },

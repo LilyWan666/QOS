@@ -1,0 +1,50 @@
+{
+  "schema": "qos_agent.physical_qpu_jobs.v1",
+  "description": "Local copy of IBM QPU physical fidelity records used for QOS proxy and physical-backend evaluation.",
+  "metric_source": "hellinger_mean",
+  "shots": 8192,
+  "source_dataset": "external QOS ibm_quantum/jobs records",
+  "records": {
+    "ibm_marrakesh": {
+      "util30": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_marrakesh/util30/fidelity",
+        "pair_json_count": 36
+      },
+      "util60": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_marrakesh/util60/fidelity",
+        "pair_json_count": 198
+      },
+      "util88": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_marrakesh/util88/fidelity",
+        "pair_json_count": 360
+      }
+    },
+    "ibm_torino": {
+      "util30": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_torino/util30/fidelity",
+        "pair_json_count": 36
+      },
+      "util60": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_torino/util60/fidelity",
+        "pair_json_count": 198
+      },
+      "util88": {
+        "fidelity_dir": "qpu_env/physical_qpu_jobs/ibm_torino/util88/fidelity",
+        "pair_json_count": 360
+      }
+    }
+  },
+  "provenance": {
+    "kind": "physical_qpu_measurement",
+    "backends": [
+      "ibm_marrakesh",
+      "ibm_torino"
+    ],
+    "strict_fig11_simulation_substitute": false,
+    "notes": [
+      "These records are physical QPU measurements, not local GPU/Aer simulation.",
+      "Use the backend field explicitly to avoid mixing Marrakesh and Torino results.",
+      "Fidelity values are derived from per-pair JSON hellinger_mean values."
+    ]
+  }
+}

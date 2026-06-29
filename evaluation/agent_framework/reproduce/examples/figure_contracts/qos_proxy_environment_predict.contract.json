@@ -1,0 +1,53 @@
+{
+  "figure_id": "qos_proxy_environment_predict",
+  "paper_claim": "Environment-aware proxy prediction can summarize proxy behavior against physical QPU records, but cannot satisfy strict Fig. 11 reproduction.",
+  "expected_trend": "The predictor must keep proxy and physical records separate from strict simulation success and report backend/utilization grouped evidence.",
+  "checks": [
+    {
+      "id": "success_true",
+      "path": "success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "mode_is_proxy_environment_predict",
+      "path": "execution_mode",
+      "type": "equals",
+      "value": "proxy_environment_predict"
+    },
+    {
+      "id": "not_strict_success",
+      "path": "not_fig11_strict_success",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "not_simulation_substitute",
+      "path": "strict_fig11_simulation_substitute",
+      "type": "bool_equals",
+      "value": false
+    },
+    {
+      "id": "physical_metric_source_hellinger",
+      "path": "prediction.physical_metric_source",
+      "type": "equals",
+      "value": "hellinger_mean"
+    },
+    {
+      "id": "physical_records_reference_declared",
+      "path": "prediction.physical_records_reference",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_program_reference_declared",
+      "path": "prediction.proxy_program_reference",
+      "type": "exists"
+    },
+    {
+      "id": "groups_declared",
+      "path": "prediction.groups",
+      "type": "exists"
+    }
+  ],
+  "pass_rule": "all"
+}

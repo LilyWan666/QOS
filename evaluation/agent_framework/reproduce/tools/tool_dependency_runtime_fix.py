@@ -54,9 +54,11 @@ PIP_PACKAGE_CANDIDATES: dict[str, list[str]] = {
     "yaml": ["PyYAML"],
     "jsonpickle": ["jsonpickle"],
     "mapomatic": ["mapomatic==0.10.0", "mapomatic==0.9.0", "mapomatic"],
+    "clingo": ["clingo==5.7.1", "clingo"],
     "mqt": ["mqt.predictor==1.2.2", "mqt.predictor", "mqt.qmap", "mqt"],
     "redis": ["redis==7.4.0", "redis"],
     "dimod": ["dimod==0.12.21", "dimod"],
+    "networkx": ["networkx"],
     "sklearn": ["scikit-learn"],
 }
 LEGACY_QISKIT_STACK = ["qiskit==0.46.3", "qiskit-ibm-provider==0.10.0", "qiskit-aer==0.14.2"]

@@ -348,6 +348,13 @@ def is_likely_runtime_import_surface_mismatch(module_name: str) -> bool:
     return True
 
 
+def proxy_search_enabled_on_simulation_timeout(recipe: dict[str, Any]) -> bool:
+    evolution = recipe.get("evolution") if isinstance(recipe.get("evolution"), dict) else {}
+    proxy_search = evolution.get("proxy_search") if isinstance(evolution.get("proxy_search"), dict) else {}
+    budget = recipe.get("simulation_budget") if isinstance(recipe.get("simulation_budget"), dict) else {}
+    return bool(proxy_search.get("enabled")) and bool(budget.get("proxy_on_timeout"))
+
+
 def classify_failure(
     recipe: dict[str, Any],
     workspace_root: Path,
@@ -388,6 +395,28 @@ def classify_failure(
             "recoverable": True,
             "confidence": 0.99,
             "evidence": [run_payload.get("proxy_harness_forbidden")],
+        }
+
+    if (
+        status == "run_failed"
+        and run_payload is not None
+        and bool(run_payload.get("timed_out"))
+        and proxy_search_enabled_on_simulation_timeout(recipe)
+    ):
+        return {
+            "category": "simulation_too_expensive",
+            "recoverable": True,
+            "confidence": 0.98,
+            "evidence": [
+                {
+                    "reason": "strict simulation timed out before producing validated metrics",
+                    "duration_seconds": run_payload.get("duration_seconds"),
+                    "timeout_seconds": run_payload.get("timeout_seconds"),
+                    "returncode": run_payload.get("returncode"),
+                    "proxy_search_enabled": True,
+                    "strict_success": False,
+                }
+            ],
         }
 
     if status == "preflight_failed":
@@ -712,6 +741,65 @@ def build_recovery_plan(
                 "action": "inspect_traceback_and_retry",
                 "detail": "Use stderr/stdout plus failure classification to identify the next targeted fix.",
             }
+        ]
+    elif category == "simulation_too_expensive":
+        plan["actions"] = [
+            {
+                "action": "physical_qpu_env_probe",
+                "detail": "Probe copied physical QPU measurement records as environment evidence; do not count them as strict Fig. 11 simulation success.",
+            },
+            {
+                "action": "openevolve_target_probe",
+                "detail": "Scan the repository AST/call evidence for candidate functions before proxy search.",
+            },
+            {
+                "action": "openevolve_target_semantic_select",
+                "detail": "Use LLM semantic reasoning to bind the contract target to one repository function; do not rely on token-score top-1.",
+            },
+            {
+                "action": "openevolve_param_probe",
+                "detail": "Materialize an explicit OpenEvolve parameter profile from the recipe instead of hand-written proxy settings.",
+            },
+            {
+                "action": "simulation_checkpoint_analyze",
+                "detail": "Promote partial strict-simulation checkpoints into simulation memory before proxy search.",
+            },
+            {
+                "action": "proxy_semantic_factor_brainstorm",
+                "detail": "Use LLM reasoning to brainstorm paper-grounded fidelity/utilization factors before mapping them to cheap materialized proxy features.",
+            },
+            {
+                "action": "proxy_metric_semantic_propose",
+                "detail": "Map semantic factors to concrete cheap proxy metrics with materialization provenance; record missing feature requests instead of silently dropping them.",
+            },
+            {
+                "action": "proxy_feature_semantic_validate",
+                "detail": "Validate LLM-proposed proxy features across utilization and application splits before allowing them into OpenEvolve.",
+            },
+            {
+                "action": "proxy_environment_predict",
+                "detail": "Record a baseline environment-aware proxy prediction before evolution.",
+            },
+            {
+                "action": "openevolve_proxy_search",
+                "detail": "Run OpenEvolve to search a cheaper proxy objective; mark the result as not Fig. 11 strict success.",
+            },
+            {
+                "action": "openevolve_slurm_submit",
+                "detail": "Submit the OpenEvolve proxy search to a Qwen/vLLM SLURM job when local LLM inference is unavailable.",
+            },
+            {
+                "action": "openevolve_slurm_collect",
+                "detail": "Collect the evolved proxy program and SLURM status before proxy verification.",
+            },
+            {
+                "action": "openevolve_proxy_verify",
+                "detail": "Verify proxy quality against trusted simulation samples and keep strict/proxy provenance separate.",
+            },
+            {
+                "action": "proxy_verify_physical",
+                "detail": "Verify the evolved proxy against physical QPU records in verify-only mode.",
+            },
         ]
     elif category == "original_code_path_not_exercised":
         plan["actions"] = [
