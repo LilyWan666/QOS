@@ -86,12 +86,27 @@ def _sacct(job_id: str) -> dict[str, Any]:
 def _best_program(output_dir: Path | None) -> Path | None:
     if output_dir is None or not output_dir.exists():
         return None
+    final_best = output_dir / "best" / "best_program.py"
+    if final_best.exists() and final_best.is_file():
+        return final_best
     candidates = []
     for pattern in ("**/best_program.py", "**/best_program*.py", "**/program.py"):
-        candidates.extend(output_dir.glob(pattern))
+        try:
+            candidates.extend(output_dir.glob(pattern))
+        except OSError:
+            continue
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    live_candidates = []
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file():
+                live_candidates.append(path)
+        except OSError:
+            continue
+    if not live_candidates:
+        return None
+    return max(live_candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _sha256(path: Path | None) -> str | None:

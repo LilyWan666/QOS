@@ -162,6 +162,10 @@ trap cleanup EXIT
 
 cd "${{REPO_ROOT}}"
 
+if [[ "${{REPRO_OPENEVOLVE_SLURM_INSTALL_DEPS:-1}}" != "0" ]]; then
+  "${{PYTHON_BIN}}" -m pip install -e "${{OPENEVOLVE_ROOT}}"
+fi
+
 apptainer run --nv --bind /projects,/work,/u "${{VLLM_IMG}}" \\
   vllm serve "${{MODEL_DIR}}" \\
   --served-model-name "${{MODEL}}" \\

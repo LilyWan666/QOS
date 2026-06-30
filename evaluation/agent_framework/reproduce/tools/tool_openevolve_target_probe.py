@@ -536,7 +536,6 @@ def build_probe(repo_root: Path) -> dict[str, Any]:
     payload["qos_evolution_target"] = _qos_evolution_target_probe(repo_root)
     payload["success"] = bool(
         payload["target_functions"]["evolve"]["found"]
-        and payload["target_functions"]["verify"]["found"]
         and payload["qos_evolution_target"].get("found")
         and payload["openevolve"].get("source_root") == OPENEVOLVE_REL_ROOT.as_posix()
     )

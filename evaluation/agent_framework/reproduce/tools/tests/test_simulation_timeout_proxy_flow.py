@@ -21,7 +21,10 @@ from run_reproduce_tool_loop import choose_action_fallback
 from tool_openevolve_proxy_search import (
     _build_evaluator,
     _build_initial_program,
+    _build_prompt_templates,
     _build_training_data,
+    _proxy_feature_spec,
+    _semantic_factor_evidence,
     _seed_transfer_payload,
 )
 from tool_simulation_checkpoint_analyze import build_memory
@@ -193,6 +196,64 @@ class SimulationTimeoutProxyFlowTests(unittest.TestCase):
 
         self.assertIn("Initial seed mode: manual_qos_normalized", program)
         self.assertIn("_qos_agent_normalize_utilization(self.effective_utilization", program)
+
+    def test_openevolve_initial_seed_materializes_selected_proxy_scaffold(self) -> None:
+        target = {
+            "entrypoint": "qos.multiprogrammer.multiprogrammer:Multiprogrammer.get_matching_score",
+            "source_path": "qos/multiprogrammer/multiprogrammer.py",
+            "source": """
+            def get_matching_score(self, q1, q2, backend, weighted=False, weights=[]):
+                util_eff = self.effective_utilization(q1, q2, backend)
+                entanglementDiff = self.entanglementComparison(q1, q2)
+                measurementDiff = self.measurementComparison(q1, q2)
+                parallelismDiff = self.parallelismComparison(q1, q2)
+                return (util_eff + entanglementDiff + measurementDiff + parallelismDiff) / 4
+            """,
+        }
+
+        program = _build_initial_program(target, proxy_specs=[_proxy_feature_spec("depth_ratio")])
+
+        self.assertIn("Selected proxy feature(s): depth_ratio", program)
+        self.assertIn("depth_ratio = _qos_agent_ratio(depth1, depth2)", program)
+        self.assertIn("critical_depth_ratio = _qos_agent_ratio", program)
+        self.assertIn("return (util_eff + entanglementDiff + measurementDiff + parallelismDiff) / 4", program)
+
+    def test_openevolve_prompt_declares_selected_proxy_axis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            template_dir = Path(tmpdir) / "templates"
+            template_dir.mkdir(parents=True)
+            _build_prompt_templates(template_dir, proxy_specs=[_proxy_feature_spec("depth_ratio")])
+            prompt = (template_dir / "full_rewrite_user.txt").read_text(encoding="utf-8")
+
+        self.assertIn("Current proxy second metric: depth_ratio", prompt)
+        self.assertIn("Proxy label transform: normalized feature with direction=direct", prompt)
+        self.assertIn("proxy_estimated_fidelity = normalized(depth_ratio, direction=direct)", prompt)
+        self.assertIn("expression: min(depth1, depth2) / max(depth1, depth2, 1.0)", prompt)
+
+    def test_semantic_factor_evidence_can_come_from_metric_proposal(self) -> None:
+        evidence = _semantic_factor_evidence(
+            {
+                "last_proxy_semantic_factor_brainstorm": {
+                    "success": False,
+                    "brainstorm_mode": "llm_semantic_factor_brainstorm",
+                },
+                "last_proxy_metric_semantic_proposal": {
+                    "success": True,
+                    "candidates": [
+                        {
+                            "semantic_factor_name": "depth balance",
+                            "materialized_feature_name": "depth_ratio",
+                            "paper_rationale": "Depth balance affects fidelity.",
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertTrue(evidence["success"])
+        self.assertEqual(evidence["brainstorm_mode"], "semantic_factor_evidence_from_metric_proposal")
+        self.assertEqual(evidence["semantic_factors"][0]["name"], "depth balance")
+        self.assertEqual(evidence["semantic_factors"][0]["materialized_feature_name"], "depth_ratio")
 
     def test_openevolve_evaluator_does_not_gate_score_by_front_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

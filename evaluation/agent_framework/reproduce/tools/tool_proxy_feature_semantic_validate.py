@@ -38,6 +38,7 @@ from tool_openevolve_proxy_search import (  # noqa: E402
     _physical_records_path,
     _profile_env,
     _profile_objective_resolution,
+    _proxy_feature_specs,
     _rank_for_correlation,
     _simulation_memory_path,
     _spearman_values,
@@ -285,6 +286,7 @@ def build_payload(repo_root: Path, state: dict[str, Any], artifact_dir: Path) ->
     )
     selected_bundle = selected_pool[: max(1, max_bundle_size)]
     selected_features = [str(item["feature"]) for item in selected_bundle]
+    selected_feature_specs = _proxy_feature_specs(selected_features)
     rejected = [
         {
             "feature": item.get("feature"),
@@ -315,6 +317,8 @@ def build_payload(repo_root: Path, state: dict[str, Any], artifact_dir: Path) ->
         "selected_feature": selected_features[0] if selected_features else None,
         "selected_feature_bundle": selected_bundle,
         "selected_feature_names": selected_features,
+        "selected_feature_specs": selected_feature_specs,
+        "selected_proxy_feature_spec": selected_feature_specs[0] if selected_feature_specs else None,
         "rejected_features": rejected,
         "feature_scores": scored,
         "selection_policy": {

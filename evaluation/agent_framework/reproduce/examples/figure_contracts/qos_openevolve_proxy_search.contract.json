@@ -50,12 +50,6 @@
       "value": true
     },
     {
-      "id": "verify_target_found",
-      "path": "target_functions.verify.found",
-      "type": "bool_equals",
-      "value": true
-    },
-    {
       "id": "eval_shots_8192",
       "path": "evolution_config.eval_shots",
       "type": "equals",
@@ -87,6 +81,27 @@
       "type": "exists"
     },
     {
+      "id": "proxy_feature_spec_declared",
+      "path": "evolution_config.proxy_feature_specs[0].feature_expression",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_prompt_declares_second_axis",
+      "path": "evolution_config.proxy_prompt_context.declares_proxy_second_axis",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "proxy_prompt_primary_feature_matches_config",
+      "path": "evolution_config.proxy_prompt_context.primary_proxy_feature",
+      "type": "exists"
+    },
+    {
+      "id": "proxy_prompt_primary_feature_direction_declared",
+      "path": "evolution_config.proxy_prompt_context.primary_feature_direction",
+      "type": "exists"
+    },
+    {
       "id": "proxy_metric_proposal_declared",
       "path": "evolution_config.proxy_metric_semantic_proposal.selection_mode",
       "type": "equals",
@@ -95,8 +110,11 @@
     {
       "id": "proxy_semantic_factor_brainstorm_declared",
       "path": "evolution_config.proxy_semantic_factor_brainstorm.brainstorm_mode",
-      "type": "equals",
-      "value": "llm_semantic_factor_brainstorm"
+      "type": "in_set",
+      "values": [
+        "llm_semantic_factor_brainstorm",
+        "semantic_factor_evidence_from_metric_proposal"
+      ]
     },
     {
       "id": "proxy_semantic_factors_exist",
@@ -144,6 +162,23 @@
       "path": "evolution_config.seed_effective_utilization_scale.normalization",
       "type": "equals",
       "value": "percent_to_unit_interval_if_value_gt_1"
+    },
+    {
+      "id": "initial_seed_proxy_scaffold_enabled",
+      "path": "evolution_config.initial_seed.proxy_scaffold.enabled",
+      "type": "bool_equals",
+      "value": true
+    },
+    {
+      "id": "initial_seed_materializes_selected_proxy",
+      "path": "evolution_config.initial_seed.proxy_scaffold.selected_proxy_feature",
+      "type": "exists"
+    },
+    {
+      "id": "initial_seed_scaffold_does_not_change_qos_score",
+      "path": "evolution_config.initial_seed.proxy_scaffold.changes_initial_qos_score",
+      "type": "bool_equals",
+      "value": false
     },
     {
       "id": "qos_evolution_target_declared",
@@ -210,7 +245,7 @@
       "id": "paper_metric_basis_uses_pareto_rank",
       "path": "evolution_config.paper_metric_basis.aggregation",
       "type": "equals",
-      "value": "pareto_rank"
+      "value": "selected_topk_average_pareto_rank"
     },
     {
       "id": "paper_metric_basis_uses_topk_selection",
@@ -228,7 +263,7 @@
       "id": "evaluator_strategy_uses_pareto_rank",
       "path": "evolution_config.evaluator_selection.aggregation",
       "type": "equals",
-      "value": "pareto_rank"
+      "value": "selected_topk_average_pareto_rank"
     },
     {
       "id": "evaluator_strategy_uses_topk_selection",

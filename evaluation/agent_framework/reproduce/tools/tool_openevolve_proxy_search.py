@@ -196,7 +196,270 @@ def _proxy_depth_ratio_source() -> str:
     return min(depth1, depth2) / max(depth1, depth2, 1.0)'''
 
 
-def _build_initial_program(qos_target: dict[str, Any], seed_mode: str = "manual_qos_normalized") -> str:
+def _proxy_feature_spec(feature: str | None) -> dict[str, Any]:
+    name = str(feature or "").strip()
+    specs: dict[str, dict[str, Any]] = {
+        "depth_ratio": {
+            "selected_proxy_feature": "depth_ratio",
+            "required_metadata": ["depth"],
+            "feature_expression": "min(depth1, depth2) / max(depth1, depth2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Depth similarity between the two co-scheduled circuits.",
+        },
+        "critical_depth_ratio": {
+            "selected_proxy_feature": "critical_depth_ratio",
+            "required_metadata": ["critical_depth"],
+            "feature_expression": "min(critical_depth1, critical_depth2) / max(critical_depth1, critical_depth2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Critical-path depth similarity between co-scheduled circuits.",
+        },
+        "qubit_imbalance": {
+            "selected_proxy_feature": "qubit_imbalance",
+            "required_metadata": ["num_qubits"],
+            "feature_expression": "abs(qubits1 - qubits2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "0_to_1_lower_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Qubit-count imbalance between the two circuits.",
+        },
+        "cnot_ratio": {
+            "selected_proxy_feature": "cnot_ratio",
+            "required_metadata": ["num_cnot_gates"],
+            "feature_expression": "min(cnot1, cnot2) / max(cnot1, cnot2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "CNOT-count similarity between co-scheduled circuits.",
+        },
+        "nonlocal_ratio": {
+            "selected_proxy_feature": "nonlocal_ratio",
+            "required_metadata": ["num_nonlocal_gates"],
+            "feature_expression": "min(nonlocal1, nonlocal2) / max(nonlocal1, nonlocal2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Multi-qubit/nonlocal-gate similarity between co-scheduled circuits.",
+        },
+        "instr_ratio": {
+            "selected_proxy_feature": "instr_ratio",
+            "required_metadata": ["number_instructions"],
+            "feature_expression": "min(instr1, instr2) / max(instr1, instr2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Instruction-count similarity between co-scheduled circuits.",
+        },
+        "measure_ratio": {
+            "selected_proxy_feature": "measure_ratio",
+            "required_metadata": ["num_measurements"],
+            "feature_expression": "min(measurements1, measurements2) / max(measurements1, measurements2, 1.0)",
+            "scale": "0_to_1_higher_is_better",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Measurement-count similarity between co-scheduled circuits.",
+        },
+        "cnot_density": {
+            "selected_proxy_feature": "cnot_density",
+            "required_metadata": ["num_cnot_gates", "num_qubits"],
+            "feature_expression": "(cnot1 + cnot2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Two-qubit gate density per joint qubit.",
+        },
+        "nonlocal_density": {
+            "selected_proxy_feature": "nonlocal_density",
+            "required_metadata": ["num_nonlocal_gates", "num_qubits"],
+            "feature_expression": "(nonlocal1 + nonlocal2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Nonlocal gate density per joint qubit.",
+        },
+        "instr_density": {
+            "selected_proxy_feature": "instr_density",
+            "required_metadata": ["number_instructions", "num_qubits"],
+            "feature_expression": "(instr1 + instr2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Instruction density per joint qubit.",
+        },
+        "measure_density": {
+            "selected_proxy_feature": "measure_density",
+            "required_metadata": ["num_measurements", "num_qubits"],
+            "feature_expression": "(measurements1 + measurements2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Measurement density per joint qubit.",
+        },
+        "critical_depth_density": {
+            "selected_proxy_feature": "critical_depth_density",
+            "required_metadata": ["critical_depth", "num_qubits"],
+            "feature_expression": "(critical_depth1 + critical_depth2) / max(qubits1 + qubits2, 1.0)",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Critical-path depth density per joint qubit.",
+        },
+        "joint_qubits": {
+            "selected_proxy_feature": "joint_qubits",
+            "required_metadata": ["num_qubits"],
+            "feature_expression": "qubits1 + qubits2",
+            "scale": "nonnegative_contextual",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Total qubits used by the selected pair.",
+        },
+    }
+    return specs.get(
+        name,
+        {
+            "selected_proxy_feature": name or "unknown",
+            "required_metadata": [],
+            "feature_expression": name or "unknown",
+            "scale": "unknown",
+            "semantic_role": "fidelity_proxy_second_axis",
+            "description": "Proxy feature selected by the semantic proxy validation tool.",
+        },
+    )
+
+
+def _proxy_feature_specs(features: list[str] | tuple[str, ...] | None) -> list[dict[str, Any]]:
+    return [_proxy_feature_spec(feature) for feature in dict.fromkeys(str(item) for item in (features or []) if str(item))]
+
+
+def _semantic_factor_evidence(state: dict[str, Any]) -> dict[str, Any]:
+    brainstorm = state.get("last_proxy_semantic_factor_brainstorm")
+    if isinstance(brainstorm, dict) and brainstorm.get("semantic_factors"):
+        return {
+            key: value
+            for key, value in brainstorm.items()
+            if key not in {"prompt_payload", "llm_payload"}
+        }
+
+    proposal = state.get("last_proxy_metric_semantic_proposal")
+    factors: list[dict[str, Any]] = []
+    if isinstance(proposal, dict):
+        for candidate in proposal.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            name = str(candidate.get("semantic_factor_name") or candidate.get("name") or "").strip()
+            if not name:
+                continue
+            factors.append(
+                {
+                    "name": name,
+                    "materialized_feature_name": candidate.get("materialized_feature_name"),
+                    "paper_rationale": candidate.get("paper_rationale"),
+                    "repo_rationale": candidate.get("repo_rationale"),
+                    "required_metadata_keys": candidate.get("required_metadata_keys") or [],
+                    "source": "proxy_metric_semantic_proposal.candidates",
+                }
+            )
+    if factors:
+        return {
+            "success": True,
+            "brainstorm_mode": "semantic_factor_evidence_from_metric_proposal",
+            "evidence_source": "proxy_metric_semantic_proposal.candidates",
+            "semantic_factors": factors,
+            "upstream_brainstorm_success": bool(isinstance(brainstorm, dict) and brainstorm.get("success")),
+            "manual_proxy_source_used": False,
+        }
+
+    return {
+        key: value
+        for key, value in (brainstorm or {}).items()
+        if key not in {"prompt_payload", "llm_payload"}
+    }
+
+
+def _seed_proxy_scaffold_source(proxy_specs: list[dict[str, Any]] | None = None) -> str:
+    selected = [str(spec.get("selected_proxy_feature")) for spec in (proxy_specs or []) if spec.get("selected_proxy_feature")]
+    selected_text = ", ".join(selected) if selected else "none"
+    return f'''    # QOS-Agent proxy feature scaffold.
+    # Selected proxy feature(s): {selected_text}.
+    # These variables are intentionally materialized for OpenEvolve; the initial
+    # QOS score below is still the repository baseline unless the LLM changes it.
+    meta1 = q1.get_metadata() or {{}}
+    meta2 = q2.get_metadata() or {{}}
+    def _qos_agent_meta(meta, key, default=0.0):
+        try:
+            return float(meta.get(key, default) or default)
+        except Exception:
+            return float(default)
+    def _qos_agent_ratio(left, right):
+        left = float(left or 0.0)
+        right = float(right or 0.0)
+        if left <= 0.0 and right <= 0.0:
+            return 0.0
+        return min(left, right) / max(left, right, 1.0)
+    depth1 = _qos_agent_meta(meta1, "depth")
+    depth2 = _qos_agent_meta(meta2, "depth")
+    qubits1 = _qos_agent_meta(meta1, "num_qubits")
+    qubits2 = _qos_agent_meta(meta2, "num_qubits")
+    nonlocal1 = _qos_agent_meta(meta1, "num_nonlocal_gates")
+    nonlocal2 = _qos_agent_meta(meta2, "num_nonlocal_gates")
+    cnot1 = _qos_agent_meta(meta1, "num_cnot_gates")
+    cnot2 = _qos_agent_meta(meta2, "num_cnot_gates")
+    measurements1 = _qos_agent_meta(meta1, "num_measurements")
+    measurements2 = _qos_agent_meta(meta2, "num_measurements")
+    instr1 = _qos_agent_meta(meta1, "number_instructions")
+    instr2 = _qos_agent_meta(meta2, "number_instructions")
+    critical_depth1 = _qos_agent_meta(meta1, "critical_depth")
+    critical_depth2 = _qos_agent_meta(meta2, "critical_depth")
+    connected_components1 = _qos_agent_meta(meta1, "num_connected_components")
+    connected_components2 = _qos_agent_meta(meta2, "num_connected_components")
+    liveness1 = _qos_agent_meta(meta1, "liveness")
+    liveness2 = _qos_agent_meta(meta2, "liveness")
+    program_communication1 = _qos_agent_meta(meta1, "program_communication")
+    program_communication2 = _qos_agent_meta(meta2, "program_communication")
+    parallelism1 = _qos_agent_meta(meta1, "parallelism")
+    parallelism2 = _qos_agent_meta(meta2, "parallelism")
+    measurement1 = _qos_agent_meta(meta1, "measurement")
+    measurement2 = _qos_agent_meta(meta2, "measurement")
+    entanglement_ratio1 = _qos_agent_meta(meta1, "entanglement_ratio")
+    entanglement_ratio2 = _qos_agent_meta(meta2, "entanglement_ratio")
+    depth_ratio = _qos_agent_ratio(depth1, depth2)
+    qubit_ratio = _qos_agent_ratio(qubits1, qubits2)
+    nonlocal_ratio = _qos_agent_ratio(nonlocal1, nonlocal2)
+    cnot_ratio = _qos_agent_ratio(cnot1, cnot2)
+    measure_ratio = _qos_agent_ratio(measurements1, measurements2)
+    instr_ratio = _qos_agent_ratio(instr1, instr2)
+    critical_depth_ratio = _qos_agent_ratio(critical_depth1, critical_depth2)
+    qubit_imbalance = abs(qubits1 - qubits2) / max(qubits1 + qubits2, 1.0)
+    cnot_density = (cnot1 + cnot2) / max(qubits1 + qubits2, 1.0)
+    nonlocal_density = (nonlocal1 + nonlocal2) / max(qubits1 + qubits2, 1.0)
+    measure_density = (measurements1 + measurements2) / max(qubits1 + qubits2, 1.0)
+    instr_density = (instr1 + instr2) / max(qubits1 + qubits2, 1.0)
+    critical_depth_density = (critical_depth1 + critical_depth2) / max(qubits1 + qubits2, 1.0)
+    joint_qubits = qubits1 + qubits2
+'''
+
+
+def _inject_seed_proxy_scaffold(source: str, proxy_specs: list[dict[str, Any]] | None = None) -> tuple[str, list[str]]:
+    if not proxy_specs:
+        return source, []
+    lines = source.rstrip().splitlines()
+    if not lines or not lines[0].lstrip().startswith("def get_matching_score"):
+        return source, []
+    scaffold = _seed_proxy_scaffold_source(proxy_specs).rstrip().splitlines()
+    scaffold_features = [
+        "depth_ratio",
+        "qubit_ratio",
+        "nonlocal_ratio",
+        "cnot_ratio",
+        "measure_ratio",
+        "instr_ratio",
+        "critical_depth_ratio",
+        "qubit_imbalance",
+        "cnot_density",
+        "nonlocal_density",
+        "measure_density",
+        "instr_density",
+        "critical_depth_density",
+        "joint_qubits",
+    ]
+    return "\n".join([lines[0], *scaffold, *lines[1:]]).rstrip() + "\n", scaffold_features
+
+
+def _build_initial_program(
+    qos_target: dict[str, Any],
+    seed_mode: str = "manual_qos_normalized",
+    proxy_specs: list[dict[str, Any]] | None = None,
+) -> str:
     seed_mode = str(seed_mode or "manual_qos_normalized").strip().lower()
     source = str(qos_target.get("source") or "").strip()
     if not source:
@@ -215,6 +478,9 @@ def _build_initial_program(qos_target: dict[str, Any], seed_mode: str = "manual_
                 "unsupported REPRO_OPENEVOLVE_INITIAL_SEED="
                 f"{seed_mode!r}; expected repo_qos_raw, manual_qos_normalized, or proxy_depth_ratio"
             )
+    scaffold_features: list[str] = []
+    if seed_mode in {"repo_qos_raw", "manual_qos_normalized"}:
+        source, scaffold_features = _inject_seed_proxy_scaffold(source, proxy_specs)
     source = source.rstrip()
     entrypoint = str(qos_target.get("entrypoint") or "unknown")
     source_path = str(qos_target.get("source_path") or "unknown")
@@ -226,6 +492,8 @@ def _build_initial_program(qos_target: dict[str, Any], seed_mode: str = "manual_
     normalization_note = seed_notes.get(seed_mode, "Initial seed mode: unknown.")
     if util_scale_normalized:
         normalization_note += " The AST rewrite wrapped self.effective_utilization(...) with _qos_agent_normalize_utilization(...)."
+    if scaffold_features:
+        normalization_note += " The generated seed materializes proxy scaffold features without changing the initial QOS scoring logic."
     return f'''"""OpenEvolve initial program for QOS pair-selection evolution.
 
 Generated by QOS-Agent from an auto-discovered in-repository target.
@@ -253,7 +521,62 @@ def _qos_agent_normalize_utilization(value):
 '''
 
 
-def _build_prompt_templates(template_dir: Path) -> None:
+def _format_proxy_prompt_context(
+    proxy_specs: list[dict[str, Any]] | None = None,
+    proxy_direction: str | None = None,
+) -> str:
+    if not proxy_specs:
+        return (
+            "## Proxy Objective Context\n\n"
+            "The current run uses a configured fidelity-like/proxy metric, but no "
+            "validated proxy feature spec was available. Prefer explicit metadata "
+            "features and keep the score general across applications.\n"
+        )
+    primary = proxy_specs[0]
+    direction = str(proxy_direction or "direct").strip() or "direct"
+    lines = [
+        "## Proxy Objective Context",
+        "",
+        f"Current proxy second metric: {primary.get('selected_proxy_feature')}",
+        f"Proxy label transform: normalized feature with direction={direction}",
+        "Pareto rank is computed over:",
+        "1. effective_utilization",
+        f"2. proxy_estimated_fidelity = normalized({primary.get('selected_proxy_feature')}, direction={direction})",
+        "",
+        "Selected proxy feature specs:",
+    ]
+    for spec in proxy_specs:
+        lines.extend(
+            [
+                f"- feature: {spec.get('selected_proxy_feature')}",
+                f"  expression: {spec.get('feature_expression')}",
+                f"  required_metadata: {', '.join(str(item) for item in spec.get('required_metadata') or []) or 'none'}",
+                f"  scale: {spec.get('scale')}",
+                f"  role: {spec.get('semantic_role')}",
+                f"  meaning: {spec.get('description')}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "The evaluator normalizes the selected raw feature into",
+            "`proxy_estimated_fidelity` before Pareto ranking. If direction=inverse,",
+            "smaller raw feature values become better proxy labels.",
+            "",
+            "The initial program materializes these proxy scaffold variables inside",
+            "`get_matching_score`. They are available for the LLM to use, but the",
+            "initial score remains the repository QOS baseline unless changed.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _build_prompt_templates(
+    template_dir: Path,
+    proxy_specs: list[dict[str, Any]] | None = None,
+    proxy_direction: str | None = None,
+) -> None:
+    proxy_context = _format_proxy_prompt_context(proxy_specs, proxy_direction=proxy_direction)
     diff_user = """# Current Program Information
 - Fitness: {fitness_score}
 - Metrics:
@@ -262,6 +585,8 @@ def _build_prompt_templates(template_dir: Path) -> None:
 {improvement_areas}
 
 {artifacts}
+
+PROXY_CONTEXT_PLACEHOLDER
 
 # Program Evolution History
 {evolution_history}
@@ -274,8 +599,8 @@ END_CURRENT_PROGRAM
 # Task
 Improve only the Python function `get_matching_score(self, q1, q2, backend, weighted=False, weights=[])` to increase validation_score.
 `validation_score` is the inverse average Pareto rank of the selected top-k
-pairs. Pareto rank is computed from effective utilization and the configured
-fidelity-like/proxy metric. Rank agreement and rank-1 front overlap are
+pairs. Pareto rank is computed from effective utilization and the proxy
+metric declared in the Proxy Objective Context above. Rank agreement and rank-1 front overlap are
 diagnostic only; do not optimize for mandatory overlap with the Pareto front.
 
 Return one or more SEARCH/REPLACE blocks in exactly this format:
@@ -315,6 +640,7 @@ Rules:
         diff_user.replace("SEARCH_BLOCK_MARKER", "<" * 7 + " SEARCH")
         .replace("SEARCH_REPLACE_DIVIDER", "=" * 7)
         .replace("REPLACE_BLOCK_MARKER", ">" * 7 + " REPLACE")
+        .replace("PROXY_CONTEXT_PLACEHOLDER", proxy_context)
     )
     full_rewrite_user = """# Current Program Information
 - Fitness: {fitness_score}
@@ -324,6 +650,8 @@ Rules:
 {improvement_areas}
 
 {artifacts}
+
+PROXY_CONTEXT_PLACEHOLDER
 
 # Program Evolution History
 {evolution_history}
@@ -336,8 +664,8 @@ Rules:
 # Task
 Rewrite the complete Python program to improve `validation_score`.
 `validation_score` is the inverse average Pareto rank of the selected top-k
-pairs. Pareto rank is computed from effective utilization and the configured
-fidelity-like/proxy metric. Rank agreement and rank-1 front overlap are
+pairs. Pareto rank is computed from effective utilization and the proxy
+metric declared in the Proxy Objective Context above. Rank agreement and rank-1 front overlap are
 diagnostic only; do not optimize for mandatory overlap with the Pareto front.
 
 Requirements:
@@ -364,6 +692,7 @@ Requirements:
   held-out validation records only; prefer rules that generalize instead of
   memorizing utilization buckets or application names.
 """
+    full_rewrite_user = full_rewrite_user.replace("PROXY_CONTEXT_PLACEHOLDER", proxy_context)
     top_program = """### Program {program_number} (Score: {score})
 BEGIN_PROGRAM
 {program_snippet}
@@ -1735,6 +2064,27 @@ def build_proxy_payload(
         semantic_proxy_proposal=state.get("last_proxy_metric_semantic_proposal"),
         semantic_feature_validation=state.get("last_proxy_feature_semantic_validation"),
     )
+    semantic_feature_validation = state.get("last_proxy_feature_semantic_validation")
+    selected_proxy_features: list[str] = []
+    if isinstance(semantic_feature_validation, dict) and semantic_feature_validation.get("success"):
+        selected_proxy_features = [
+            str(item)
+            for item in (semantic_feature_validation.get("selected_feature_names") or [])
+            if str(item)
+        ]
+    selected_proxy_feature = str(
+        pre_evolution_proxy_validation.get("selected_feature")
+        or objective_resolution.get("proxy_feature")
+        or profile.get("OE_PROXY_FEATURE")
+        or (selected_proxy_features[0] if selected_proxy_features else "")
+        or "depth_ratio"
+    )
+    if selected_proxy_feature and selected_proxy_feature not in selected_proxy_features:
+        selected_proxy_features.insert(0, selected_proxy_feature)
+    selected_proxy_specs = _proxy_feature_specs(selected_proxy_features)
+    if not selected_proxy_specs:
+        selected_proxy_specs = [_proxy_feature_spec(selected_proxy_feature)]
+    selected_proxy_direction = str(pre_evolution_proxy_validation.get("direction") or "direct")
     seed_transfer = _seed_transfer_payload(training_payload, profile)
     qos_target = _selected_qos_target(state, probe)
     semantic_selection = state.get("last_openevolve_target_semantic_selection")
@@ -1837,15 +2187,21 @@ def build_proxy_payload(
         }
 
     initial_seed_mode = os.getenv("REPRO_OPENEVOLVE_INITIAL_SEED", "manual_qos_normalized").strip().lower()
-    _write_text(initial_program, _build_initial_program(qos_target, seed_mode=initial_seed_mode))
+    _write_text(
+        initial_program,
+        _build_initial_program(qos_target, seed_mode=initial_seed_mode, proxy_specs=selected_proxy_specs),
+    )
     baseline_program_paths = {
         "repo_qos_raw": baseline_dir / "repo_qos_raw.py",
         "manual_qos_normalized": baseline_dir / "manual_qos_normalized.py",
         "proxy_depth_ratio": baseline_dir / "proxy_depth_ratio.py",
     }
     for baseline_mode, baseline_path in baseline_program_paths.items():
-        _write_text(baseline_path, _build_initial_program(qos_target, seed_mode=baseline_mode))
-    _build_prompt_templates(template_dir)
+        _write_text(
+            baseline_path,
+            _build_initial_program(qos_target, seed_mode=baseline_mode, proxy_specs=selected_proxy_specs),
+        )
+    _build_prompt_templates(template_dir, proxy_specs=selected_proxy_specs, proxy_direction=selected_proxy_direction)
     _write_json(training_data, training_payload)
     _write_text(evaluator, _build_evaluator(training_data))
     baseline_comparison = _run_generated_baseline_comparison(
@@ -1853,22 +2209,6 @@ def build_proxy_payload(
         initial_program,
         baseline_comparison_path,
     )
-    selected_proxy_feature = str(
-        pre_evolution_proxy_validation.get("selected_feature")
-        or objective_resolution.get("proxy_feature")
-        or profile.get("OE_PROXY_FEATURE")
-        or "depth_ratio"
-    )
-    semantic_feature_validation = state.get("last_proxy_feature_semantic_validation")
-    selected_proxy_features = []
-    if isinstance(semantic_feature_validation, dict) and semantic_feature_validation.get("success"):
-        selected_proxy_features = [
-            str(item)
-            for item in (semantic_feature_validation.get("selected_feature_names") or [])
-            if str(item)
-        ]
-    if selected_proxy_feature and selected_proxy_feature not in selected_proxy_features:
-        selected_proxy_features.insert(0, selected_proxy_feature)
     _write_text(
         config,
         _build_config(
@@ -1923,7 +2263,6 @@ def build_proxy_payload(
         "success": bool(
             probe.get("success")
             and ((probe.get("target_functions") or {}).get("evolve") or {}).get("found")
-            and ((probe.get("target_functions") or {}).get("verify") or {}).get("found")
             and bool(qos_target)
             and semantic_selection_valid
             and evaluator_selection_valid
@@ -1964,6 +2303,17 @@ def build_proxy_payload(
             ),
             "physical_backend_filter": physical_backend_filter,
             "proxy_feature": selected_proxy_feature,
+            "proxy_feature_specs": selected_proxy_specs,
+            "proxy_prompt_context": {
+                "declares_proxy_second_axis": True,
+                "primary_proxy_feature": selected_proxy_feature,
+                "primary_feature_direction": selected_proxy_direction,
+                "pareto_axes": [
+                    "effective_utilization",
+                    f"proxy_estimated_fidelity:{selected_proxy_feature}:{selected_proxy_direction}",
+                ],
+                "prompt_template_dir": _artifact_rel(repo_root, template_dir),
+            },
             "proxy_role": "pre_evolution_expensive_metric_substitute",
             "proxy_is_evolved_function": False,
             "artifact_policy": artifact_policy,
@@ -1979,11 +2329,7 @@ def build_proxy_payload(
                 for key, value in (state.get("last_proxy_metric_semantic_proposal") or {}).items()
                 if key not in {"prompt_payload", "llm_payload"}
             },
-            "proxy_semantic_factor_brainstorm": {
-                key: value
-                for key, value in (state.get("last_proxy_semantic_factor_brainstorm") or {}).items()
-                if key not in {"prompt_payload", "llm_payload"}
-            },
+            "proxy_semantic_factor_brainstorm": _semantic_factor_evidence(state),
             "expensive_label_metric": training_payload.get("expensive_label_metric"),
             "objective_source": "openevolve_mutates_auto_discovered_qos_target",
             "seed_objective_only": False,
@@ -1995,6 +2341,29 @@ def build_proxy_payload(
                 "manual_qos_normalized": "repository QOS get_matching_score with effective_utilization normalized to [0,1]",
                 "proxy_depth_ratio": "pure depth-ratio proxy score",
                 "repo_source_modified": False,
+                "proxy_scaffold": {
+                    "enabled": bool(selected_proxy_specs and initial_seed_mode in {"repo_qos_raw", "manual_qos_normalized"}),
+                    "selected_proxy_feature": selected_proxy_feature,
+                    "selected_proxy_features": selected_proxy_features,
+                    "feature_specs": selected_proxy_specs,
+                    "scaffold_features": [
+                        "depth_ratio",
+                        "qubit_ratio",
+                        "nonlocal_ratio",
+                        "cnot_ratio",
+                        "measure_ratio",
+                        "instr_ratio",
+                        "critical_depth_ratio",
+                        "qubit_imbalance",
+                        "cnot_density",
+                        "nonlocal_density",
+                        "measure_density",
+                        "instr_density",
+                        "critical_depth_density",
+                        "joint_qubits",
+                    ],
+                    "changes_initial_qos_score": False,
+                },
             },
             "seed_effective_utilization_scale": {
                 "normalization": "none"
